@@ -1,0 +1,54 @@
+schema: spec-driven
+
+context: |
+  Project: orga — an agent-native kanban board CLI written in Rust.
+
+  Purpose: A CLI tool that LLM agents invoke as a skill to interact with shared kanban boards.
+  The agent is a first-class board member alongside human teammates. Instead of a chat interface,
+  the agent communicates via ticket comments, creates sub-tickets, manages checklists, and moves
+  tickets through the board.
+
+  Tech stack:
+  - Language: Rust (edition 2024)
+  - CLI: clap v4 with derive macros
+  - HTTP: reqwest (blocking client)
+  - Storage: rusqlite (SQLite, bundled) for per-ticket agent memory
+  - Config: TOML via serde + toml crate
+  - Serialization: serde + serde_json
+  - Error handling: thiserror
+
+  Architecture:
+  - `Board` trait — backend-agnostic abstraction; all CLI commands dispatch through it
+  - `TrelloBackend` — first and current implementation of the `Board` trait via Trello REST API v1
+  - `MemoryStore` — per-ticket SQLite memory store; agents persist context across skill invocations
+  - `AppConfig` — TOML config loaded from `~/.orga/config.toml` or via `--config` / `ORGA_CONFIG`
+  - One agent identity per config file; one board per config
+
+  Key constraints:
+  - CLI is stateless between invocations — the invoking agent skill handles scheduling
+  - Agent permissions: comment, assign, move, create sub-tickets, manage checklists — never close tickets
+  - All read commands support `--json` flag for machine-readable output
+  - Errors with `--json` produce `{"error": "<message>"}` to stderr with non-zero exit code
+  - Memory is private to the agent (local), not shared on the board
+  - No daemon, no polling loop — purely on-demand CLI
+
+  Module layout:
+  - src/lib.rs — public module exports
+  - src/main.rs — clap command structure and dispatch
+  - src/models.rs — Ticket, Comment, Checklist, ChecklistItem, Member
+  - src/error.rs — OrgaError enum
+  - src/config.rs — AppConfig and loading logic
+  - src/board/mod.rs — Board trait and build_board factory
+  - src/board/trello.rs — Trello REST API backend
+  - src/memory.rs — MemoryStore backed by SQLite
+
+  Conventions:
+  - Use `Result<T, OrgaError>` throughout; no unwrap in production code paths
+  - Human-readable output to stdout, errors to stderr
+  - New backends implement the `Board` trait and are registered in `build_board`
+  - Config validation happens at startup before any command executes
+
+# Per-artifact rules (optional)
+# rules:
+#   proposal:
+#     - Keep proposals under 500 words

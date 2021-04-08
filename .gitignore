@@ -1,0 +1,16 @@
+# Binary
+orga
+*.exe
+*.out
+
+# OS
+.DS_Store
+
+# agents
+.crush/
+.agents/
+skills-lock.json
+
+# Added by cargo
+
+/target
