@@ -11,6 +11,7 @@ type Board struct {
 
 type List struct {
 	BoardId, Id, Name string
+	Pos               float64
 }
 
 type Card struct {
