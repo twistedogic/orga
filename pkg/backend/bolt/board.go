@@ -4,47 +4,38 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-	bolt "go.etcd.io/bbolt"
 
 	"github.com/twistedogic/orga/pkg/backend"
 )
 
-type BoardHandler struct {
-	handler Store
-}
-
-func NewBoardHandler(db *bolt.DB) (BoardHandler, error) {
-	h := NewStore(boardBucketName, db)
-	return BoardHandler{
-		handler: h,
-	}, h.Init()
-}
-
-func (b BoardHandler) AddBoard(ctx context.Context, board *backend.Board) error {
+func (b Backend) AddBoard(ctx context.Context, board *backend.Board) error {
 	id := uuid.NewString()
 	board.Id = id
-	return b.handler.Set(id, &board)
+	return b.BoardHandler.Set(id, board)
 }
 
-func (b BoardHandler) GetBoard(ctx context.Context, id string) (*backend.Board, error) {
+func (b Backend) GetBoard(ctx context.Context, id string) (*backend.Board, error) {
 	board := new(backend.Board)
-	err := b.handler.Get(id, board)
-	return board, err
+	if err := b.BoardHandler.Get(id, board); err != nil {
+		return nil, err
+	}
+	board.SetBackend(b)
+	return board, nil
 }
 
-func (b BoardHandler) UpdateBoard(ctx context.Context, board *backend.Board) error {
+func (b Backend) UpdateBoard(ctx context.Context, board *backend.Board) error {
 	if _, err := b.GetBoard(ctx, board.Id); err != nil {
 		return err
 	}
-	return b.handler.Set(board.Id, board)
+	return b.BoardHandler.Set(board.Id, board)
 }
 
-func (b BoardHandler) DeleteBoard(ctx context.Context, id string) error {
-	return b.handler.Delete(id)
+func (b Backend) DeleteBoard(ctx context.Context, id string) error {
+	return b.BoardHandler.Delete(id)
 }
 
-func (b BoardHandler) ListBoards(ctx context.Context) ([]*backend.Board, error) {
-	ids, err := b.handler.List()
+func (b Backend) ListBoards(ctx context.Context) ([]*backend.Board, error) {
+	ids, err := b.BoardHandler.List()
 	if err != nil {
 		return nil, err
 	}

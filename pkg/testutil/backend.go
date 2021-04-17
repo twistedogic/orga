@@ -86,8 +86,8 @@ func TestBackend(t *testing.T, b backend.Backend) {
 
 	listName := fmt.Sprintf("List-%d", now)
 	list := &backend.List{Name: listName, BoardId: boardId}
-	Ok(t, "add list", b.AddList(ctx, list))
-	lists, err := b.ListLists(ctx, boardId)
+	Ok(t, "add list", board.AddLists(ctx, list))
+	lists, err := board.Lists(ctx)
 	Ok(t, "list lists", err)
 	listId := findId(t, listsToItems(lists), listName)
 	list, err = b.GetList(ctx, listId)
@@ -95,8 +95,8 @@ func TestBackend(t *testing.T, b backend.Backend) {
 
 	cardName := fmt.Sprintf("Card-%d", now)
 	card := &backend.Card{Name: cardName, ListId: listId}
-	Ok(t, "add card", b.AddCard(ctx, card))
-	cards, err := b.ListCards(ctx, listId)
+	Ok(t, "add card", list.AddCards(ctx, card))
+	cards, err := list.Cards(ctx)
 	Ok(t, "list cards", err)
 	cardId := findId(t, cardsToItems(cards), cardName)
 	card, err = b.GetCard(ctx, cardId)
@@ -121,16 +121,16 @@ func TestBackend(t *testing.T, b backend.Backend) {
 	equalStrings(t, board.Name, newBoard.Name)
 
 	list2 := &backend.List{Name: fmt.Sprintf("%s-2", listName), BoardId: boardId}
-	Ok(t, "add list2", b.AddList(ctx, list2))
-	lists, err = b.ListLists(ctx, boardId)
+	Ok(t, "add list2", board.AddLists(ctx, list2))
+	lists, err = board.Lists(ctx)
 	Ok(t, "list lists", err)
 	list2Id := findId(t, listsToItems(lists), list2.Name)
 	card.ListId = list2Id
-	Ok(t, "update card", b.UpdateCard(ctx, card))
+	Ok(t, "update card", card.Update(ctx))
 	cards, err = b.ListCards(ctx, list2Id)
 	Ok(t, "list cards", err)
 	findId(t, cardsToItems(cards), card.Name)
-	cards, err = b.ListCards(ctx, listId)
+	cards, err = list.Cards(ctx)
 	Ok(t, "list cards", err)
 	shouldNotFindId(t, cardsToItems(cards), card.Name)
 

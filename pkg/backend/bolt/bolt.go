@@ -11,24 +11,21 @@ const (
 )
 
 type Backend struct {
-	BoardHandler
-	ListHandler
-	CardHandler
+	BoardHandler, ListHandler, CardHandler Store
 }
 
 func NewWithDB(db *bolt.DB) (*Backend, error) {
-	var err error
 	b := new(Backend)
-	b.BoardHandler, err = NewBoardHandler(db)
-	if err != nil {
+	b.BoardHandler = NewStore(boardBucketName, db)
+	if err := b.BoardHandler.Init(); err != nil {
 		return b, err
 	}
-	b.ListHandler, err = NewListHandler(db)
-	if err != nil {
+	b.ListHandler = NewStore(listBucketName, db)
+	if err := b.ListHandler.Init(); err != nil {
 		return b, err
 	}
-	b.CardHandler, err = NewCardHandler(db)
-	if err != nil {
+	b.CardHandler = NewStore(cardBucketName, db)
+	if err := b.CardHandler.Init(); err != nil {
 		return b, err
 	}
 	return b, nil
