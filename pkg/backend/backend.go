@@ -7,12 +7,20 @@ import (
 )
 
 type Board struct {
-	Backend
+	backend  Backend `json:"-"`
 	Id, Name string
 }
 
-func (b *Board) List(ctx context.Context) ([]*List, error) {
-	lists, err := b.ListLists(ctx, b.Id)
+func (b *Board) SetBackend(be Backend) {
+	b.backend = be
+}
+
+func (b *Board) Delete(ctx context.Context) error {
+	return b.backend.DeleteBoard(ctx, b.Id)
+}
+
+func (b *Board) Lists(ctx context.Context) ([]*List, error) {
+	lists, err := b.backend.ListLists(ctx, b.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -23,21 +31,35 @@ func (b *Board) List(ctx context.Context) ([]*List, error) {
 }
 
 func (b *Board) Update(ctx context.Context) error {
-	return b.UpdateBoard(ctx, b)
+	return b.backend.UpdateBoard(ctx, b)
+}
+
+func (b *Board) AddLists(ctx context.Context, lists ...*List) error {
+	for _, list := range lists {
+		list.BoardId = b.Id
+		if err := b.backend.AddList(ctx, list); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type List struct {
-	Backend
+	backend           Backend `json:"-"`
 	BoardId, Id, Name string
 	Pos               float64
 }
 
-func (l *List) Board(ctx context.Context) (*Board, error) {
-	return l.GetBoard(ctx, l.BoardId)
+func (l *List) SetBackend(be Backend) {
+	l.backend = be
 }
 
-func (l *List) List(ctx context.Context) ([]*Card, error) {
-	cards, err := l.ListCards(ctx, l.Id)
+func (l *List) Board(ctx context.Context) (*Board, error) {
+	return l.backend.GetBoard(ctx, l.BoardId)
+}
+
+func (l *List) Cards(ctx context.Context) ([]*Card, error) {
+	cards, err := l.backend.ListCards(ctx, l.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +70,7 @@ func (l *List) List(ctx context.Context) ([]*Card, error) {
 }
 
 func (l *List) Sort(ctx context.Context) error {
-	cards, err := l.List(ctx)
+	cards, err := l.Cards(ctx)
 	if err != nil {
 		return err
 	}
@@ -62,11 +84,25 @@ func (l *List) Sort(ctx context.Context) error {
 }
 
 func (l *List) Update(ctx context.Context) error {
-	return l.UpdateList(ctx, l)
+	return l.backend.UpdateList(ctx, l)
+}
+
+func (l *List) Delete(ctx context.Context) error {
+	return l.backend.DeleteList(ctx, l.Id)
+}
+
+func (l *List) AddCards(ctx context.Context, cards ...*Card) error {
+	for _, card := range cards {
+		card.ListId = l.Id
+		if err := l.backend.AddCard(ctx, card); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type Card struct {
-	Backend
+	backend                       Backend `json:"-"`
 	LastUpdate                    time.Time
 	ListId, Id, Name, Description string
 	Value, Effort, Work           int
@@ -74,12 +110,16 @@ type Card struct {
 	Pos                           float64
 }
 
+func (c *Card) SetBackend(be Backend) {
+	c.backend = be
+}
+
 func (c *Card) List(ctx context.Context) (*List, error) {
-	return c.GetList(ctx, c.ListId)
+	return c.backend.GetList(ctx, c.ListId)
 }
 
 func (c *Card) Update(ctx context.Context) error {
-	return c.UpdateCard(ctx, c)
+	return c.backend.UpdateCard(ctx, c)
 }
 
 func (c *Card) HasHigherPriority(o *Card) bool {
