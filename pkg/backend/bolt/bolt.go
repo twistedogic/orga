@@ -16,9 +16,9 @@ type Backend struct {
 	CardHandler
 }
 
-func NewWithDB(db *bolt.DB) (Backend, error) {
+func NewWithDB(db *bolt.DB) (*Backend, error) {
 	var err error
-	b := Backend{}
+	b := new(Backend)
 	b.BoardHandler, err = NewBoardHandler(db)
 	if err != nil {
 		return b, err
@@ -34,10 +34,10 @@ func NewWithDB(db *bolt.DB) (Backend, error) {
 	return b, nil
 }
 
-func New(path string) (Backend, error) {
+func New(path string) (*Backend, error) {
 	db, err := bolt.Open(path, 0600, nil)
 	if err != nil {
-		return Backend{}, err
+		return nil, err
 	}
 	return NewWithDB(db)
 }
