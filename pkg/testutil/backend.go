@@ -21,7 +21,7 @@ type item struct {
 	Id   string
 }
 
-func boardsToItems(boards []backend.Board) []item {
+func boardsToItems(boards []*backend.Board) []item {
 	items := make([]item, len(boards))
 	for i, b := range boards {
 		items[i] = item{Name: b.Name, Id: b.Id}
@@ -29,7 +29,7 @@ func boardsToItems(boards []backend.Board) []item {
 	return items
 }
 
-func listsToItems(lists []backend.List) []item {
+func listsToItems(lists []*backend.List) []item {
 	items := make([]item, len(lists))
 	for i, l := range lists {
 		items[i] = item{Name: l.Name, Id: l.Id}
@@ -37,7 +37,7 @@ func listsToItems(lists []backend.List) []item {
 	return items
 }
 
-func cardsToItems(cards []backend.Card) []item {
+func cardsToItems(cards []*backend.Card) []item {
 	items := make([]item, len(cards))
 	for i, c := range cards {
 		items[i] = item{Name: c.Name, Id: c.Id}
@@ -76,7 +76,7 @@ func TestBackend(t *testing.T, b backend.Backend) {
 	ctx := context.TODO()
 	now := time.Now().Unix()
 	boardName := fmt.Sprintf("Board-%d", now)
-	board := backend.Board{Name: boardName}
+	board := &backend.Board{Name: boardName}
 	Ok(t, "add board", b.AddBoard(ctx, board))
 	boards, err := b.ListBoards(ctx)
 	Ok(t, "list boards", err)
@@ -85,7 +85,7 @@ func TestBackend(t *testing.T, b backend.Backend) {
 	Ok(t, "get board", err)
 
 	listName := fmt.Sprintf("List-%d", now)
-	list := backend.List{Name: listName, BoardId: boardId}
+	list := &backend.List{Name: listName, BoardId: boardId}
 	Ok(t, "add list", b.AddList(ctx, list))
 	lists, err := b.ListLists(ctx, boardId)
 	Ok(t, "list lists", err)
@@ -94,7 +94,7 @@ func TestBackend(t *testing.T, b backend.Backend) {
 	Ok(t, "get list", err)
 
 	cardName := fmt.Sprintf("Card-%d", now)
-	card := backend.Card{Name: cardName, ListId: listId}
+	card := &backend.Card{Name: cardName, ListId: listId}
 	Ok(t, "add card", b.AddCard(ctx, card))
 	cards, err := b.ListCards(ctx, listId)
 	Ok(t, "list cards", err)
@@ -120,7 +120,7 @@ func TestBackend(t *testing.T, b backend.Backend) {
 	Ok(t, "get board", err)
 	equalStrings(t, board.Name, newBoard.Name)
 
-	list2 := backend.List{Name: fmt.Sprintf("%s-2", listName), BoardId: boardId}
+	list2 := &backend.List{Name: fmt.Sprintf("%s-2", listName), BoardId: boardId}
 	Ok(t, "add list2", b.AddList(ctx, list2))
 	lists, err = b.ListLists(ctx, boardId)
 	Ok(t, "list lists", err)
