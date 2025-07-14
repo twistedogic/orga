@@ -11,7 +11,7 @@ import (
 func (b Backend) AddCard(ctx context.Context, card *backend.Card) error {
 	id := uuid.NewString()
 	card.Id = id
-	return b.CardHandler.Set(id, &card)
+	return b.CardHandler.Set(id, card)
 }
 
 func (b Backend) GetCard(ctx context.Context, id string) (*backend.Card, error) {

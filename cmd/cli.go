@@ -4,6 +4,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/twistedogic/orga/cmd/configure"
+	"github.com/twistedogic/orga/cmd/run"
 )
 
 func App() *cli.App {
@@ -12,6 +13,7 @@ func App() *cli.App {
 		Usage: "Agile Trello for one",
 		Commands: []*cli.Command{
 			configure.Command(),
+			run.Command(),
 		},
 	}
 }

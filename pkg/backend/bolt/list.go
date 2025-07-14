@@ -11,7 +11,7 @@ import (
 func (b Backend) AddList(ctx context.Context, list *backend.List) error {
 	id := uuid.NewString()
 	list.Id = id
-	return b.ListHandler.Set(id, &list)
+	return b.ListHandler.Set(id, list)
 }
 
 func (b Backend) GetList(ctx context.Context, id string) (*backend.List, error) {
