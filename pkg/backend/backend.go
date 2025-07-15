@@ -15,6 +15,10 @@ func (b *Board) SetBackend(be Backend) {
 	b.backend = be
 }
 
+func (b *Board) GetBackend() Backend {
+	return b.backend
+}
+
 func (b *Board) Delete(ctx context.Context) error {
 	return b.backend.DeleteBoard(ctx, b.Id)
 }
