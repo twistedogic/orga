@@ -1,14 +1,15 @@
 # Orga - Terminal UI Kanban Board
 
-A command-line Kanban board application with Terminal User Interface (TUI) for managing tasks in an agile workflow.
+A local command-line Kanban board application with Terminal User Interface (TUI) for managing tasks in an agile workflow. All data is stored locally using BoltDB - no external services required.
 
 ## Features
 
 - **TUI Kanban Board**: Visual board with columns for different workflow stages
 - **Card Management**: Create, edit, and delete cards with name, description, value, and effort
 - **Keyboard Navigation**: Intuitive keyboard controls for navigating the board
-- **Data Persistence**: Uses BoltDB for local data storage
-- **Configurable Boards**: Support for multiple boards and custom list names
+- **Local Data Storage**: Uses BoltDB for fast, local data persistence
+- **Multiple Boards**: Support for multiple boards with custom names
+- **Offline First**: Works completely offline with no external dependencies
 
 ## Installation
 
@@ -28,14 +29,6 @@ go build -o orga
 
 - `--board, -b`: Specify board name (default: "Main Board")
 - `--db, -d`: Specify database file path (default: "orga.db")
-
-### Configuration
-
-Configure Trello API credentials (optional):
-
-```bash
-./orga configure
-```
 
 ## TUI Controls
 
@@ -96,7 +89,8 @@ Cards are automatically sorted by priority (higher value, lower effort first).
 ## Future Enhancements
 
 - Drag and drop functionality for moving cards between lists
-- Trello API integration for synchronization
 - Custom list configuration
 - Card assignment and due dates
 - Search and filtering capabilities
+- Export/import functionality for data backup
+- Multiple board templates

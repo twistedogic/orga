@@ -8,7 +8,7 @@
 
 1. **Command Structure**
    - Added `orga run` command to start the TUI
-   - Enhanced existing `orga configure` command for Trello API setup
+   - Removed Trello dependencies - now purely local BoltDB storage
 
 2. **TUI Interface**
    - **Grid Layout**: Dynamic columns for each list (TODO, READY TO DEVELOPMENT, DOING, TESTING, DONE)
