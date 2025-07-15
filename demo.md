@@ -10,15 +10,17 @@
    - Added `orga run` command to start the TUI
    - Removed Trello dependencies - now purely local BoltDB storage
 
-2. **TUI Interface**
-   - **Grid Layout**: Dynamic columns for each list (TODO, READY TO DEVELOPMENT, DOING, TESTING, DONE)
+2. **TUI Interface** (Bubbletea)
+   - **Modern Architecture**: Model-View-Update pattern with Bubbletea
+   - **Beautiful Styling**: Lipgloss-powered visual design
+   - **Dynamic Layout**: Responsive columns for each list (TODO, READY TO DEVELOPMENT, DOING, TESTING, DONE)
    - **Card Display**: Shows card name, description, value, and effort in each list
-   - **Visual Highlighting**: Yellow border indicates current selected list
-   - **Footer**: Shows keyboard shortcuts and navigation help
+   - **Visual Highlighting**: Blue border indicates current selected list/card
+   - **Interactive Forms**: Huh-powered form handling for card creation/editing
 
 3. **Navigation System**
-   - **← →**: Move between lists (columns)
-   - **↑ ↓**: Navigate cards within a list
+   - **← → or h l**: Move between lists (columns)
+   - **↑ ↓ or k j**: Navigate cards within a list
    - **Enter**: Edit selected card
    - **n**: Create new card
    - **d**: Delete card (with confirmation)

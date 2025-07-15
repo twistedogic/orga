@@ -34,8 +34,8 @@ go build -o orga
 
 ### Navigation
 
-- **← →**: Move between lists (columns)
-- **↑ ↓**: Move between cards within a list
+- **← → or h l**: Move between lists (columns)
+- **↑ ↓ or k j**: Move between cards within a list
 - **Enter**: Edit the selected card
 - **n**: Create a new card in the current list
 - **d**: Delete the selected card
@@ -66,12 +66,16 @@ Cards are automatically sorted by priority (higher value, lower effort first).
 ## Architecture
 
 - **Backend**: Pluggable backend system with BoltDB implementation
-- **View**: TUI implementation using tview library
+- **View**: Modern TUI implementation using Bubbletea (The Elm Architecture)
 - **CLI**: Command-line interface using urfave/cli
+- **Styling**: Beautiful terminal styling with Lipgloss
+- **Forms**: Interactive forms powered by Huh
 
 ## Dependencies
 
-- `github.com/rivo/tview`: Terminal UI library
+- `github.com/charmbracelet/bubbletea`: Modern terminal UI framework
+- `github.com/charmbracelet/lipgloss`: Styling for terminal applications
+- `github.com/charmbracelet/huh`: Form handling for terminal UIs
 - `go.etcd.io/bbolt`: Embedded key/value database
 - `github.com/urfave/cli/v2`: CLI framework
 - `github.com/google/uuid`: UUID generation

@@ -69,12 +69,12 @@ func Run(ctx *cli.Context) error {
 	}
 
 	// Initialize and run TUI
-	v, err := view.New(context.Background(), board)
+	model, err := view.New(context.Background(), board)
 	if err != nil {
 		return fmt.Errorf("failed to initialize view: %w", err)
 	}
 
-	return v.Run()
+	return model.Run()
 }
 
 func generateID() string {

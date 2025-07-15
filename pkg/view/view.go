@@ -4,47 +4,81 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
-	"github.com/gdamore/tcell/v2"
+	"github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
-	"github.com/rivo/tview"
 
 	"github.com/twistedogic/orga/pkg/backend"
 	"github.com/twistedogic/orga/pkg/config"
 )
 
-type View struct {
-	context.Context
-	*tview.Application
-	*backend.Board
+// State represents the current view state
+type State int
 
-	// UI components
-	grid       *tview.Grid
+const (
+	StateBoard State = iota
+	StateCardForm
+	StateConfirmDelete
+)
+
+// Model represents the application state
+type Model struct {
+	ctx        context.Context
+	board      *backend.Board
 	lists      []*backend.List
-	listViews  []*tview.List
+	cards      map[string][]*backend.Card // list ID -> cards
 	currentCol int
-	footer     *tview.TextView
+	currentRow int
+	state      State
+	width      int
+	height     int
+	
+	// Form state
+	cardForm     *huh.Form
+	editingCard  *backend.Card
+	editingList  *backend.List
+	confirmMsg   string
+	deleteCard   *backend.Card
+	
+	// Error state
+	err error
 }
 
-func New(ctx context.Context, board *backend.Board) (View, error) {
-	v := View{
-		Context:     ctx,
-		Application: tview.NewApplication(),
-		Board:       board,
-		currentCol:  0,
+// New creates a new bubbletea model
+func New(ctx context.Context, board *backend.Board) (*Model, error) {
+	m := &Model{
+		ctx:        ctx,
+		board:      board,
+		cards:      make(map[string][]*backend.Card),
+		currentCol: 0,
+		currentRow: 0,
+		state:      StateBoard,
 	}
-	err := v.Init(ctx)
-	return v, err
+	
+	if err := m.bootstrap(ctx); err != nil {
+		return nil, err
+	}
+	
+	if err := m.loadData(); err != nil {
+		return nil, err
+	}
+	
+	return m, nil
 }
 
-func (v *View) bootstrap(ctx context.Context) error {
-	lists, err := v.Lists(ctx)
+// bootstrap creates default lists if none exist
+func (m *Model) bootstrap(ctx context.Context) error {
+	lists, err := m.board.Lists(ctx)
 	if err != nil {
 		return err
 	}
 	if len(lists) != 0 {
 		return nil
 	}
+	
 	for i, l := range config.DefaultList {
 		lists = append(lists, &backend.List{
 			Id:   uuid.New().String(),
@@ -52,350 +86,487 @@ func (v *View) bootstrap(ctx context.Context) error {
 			Pos:  float64(i),
 		})
 	}
-	return v.AddLists(ctx, lists...)
+	return m.board.AddLists(ctx, lists...)
 }
 
-func (v *View) Init(ctx context.Context) error {
-	if err := v.bootstrap(ctx); err != nil {
-		return err
-	}
-	return v.buildUI(ctx)
-}
-
-func (v *View) buildUI(ctx context.Context) error {
-	// Get lists from backend
-	lists, err := v.Lists(ctx)
+// loadData loads lists and cards from the backend
+func (m *Model) loadData() error {
+	lists, err := m.board.Lists(m.ctx)
 	if err != nil {
 		return err
 	}
-	v.lists = lists
-
-	// Create grid layout
-	v.grid = tview.NewGrid()
-	v.grid.SetBorder(true).SetTitle(fmt.Sprintf(" %s ", v.Board.Name))
-
-	// Create footer
-	v.footer = tview.NewTextView().
-		SetText("Navigation: ←→ Move between lists | ↑↓ Move between cards | Enter Edit card | n New card | d Delete card | q Quit").
-		SetTextAlign(tview.AlignCenter).
-		SetDynamicColors(true)
-
-	// Create list views
-	v.listViews = make([]*tview.List, len(lists))
-	for i, list := range lists {
-		v.listViews[i] = v.createListView(ctx, list, i)
+	m.lists = lists
+	
+	// Load cards for each list
+	m.cards = make(map[string][]*backend.Card)
+	for _, list := range lists {
+		cards, err := list.Cards(m.ctx)
+		if err != nil {
+			return err
+		}
+		m.cards[list.Id] = cards
 	}
-
-	// Set up grid layout
-	v.setupLayout()
-
-	// Set up key bindings
-	v.setupKeyBindings()
-
-	// Highlight first column
-	v.highlightColumn(0)
-
+	
 	return nil
 }
 
-func (v *View) createListView(ctx context.Context, list *backend.List, index int) *tview.List {
-	listView := tview.NewList()
-	listView.ShowSecondaryText(true).
-		SetBorder(true).
-		SetTitle(fmt.Sprintf(" %s ", list.Name))
-
-	// Load cards for this list
-	if err := v.loadCards(ctx, listView, list); err != nil {
-		// Show error in list
-		listView.AddItem("Error loading cards", err.Error(), 0, nil)
-	}
-
-	return listView
+// Init initializes the model
+func (m *Model) Init() tea.Cmd {
+	return nil
 }
 
-func (v *View) loadCards(ctx context.Context, listView *tview.List, list *backend.List) error {
-	cards, err := list.Cards(ctx)
-	if err != nil {
-		return err
-	}
-
-	listView.Clear()
-	for _, card := range cards {
-		primary := card.Name
-		secondary := ""
-		if card.Description != "" {
-			secondary = card.Description
+// Update handles messages
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+	
+	case tea.KeyMsg:
+		switch m.state {
+		case StateBoard:
+			return m.handleBoardKeys(msg)
+		case StateCardForm:
+			return m.handleFormKeys(msg)
+		case StateConfirmDelete:
+			return m.handleConfirmKeys(msg)
 		}
-		if card.Value > 0 || card.Effort > 0 {
-			secondary += fmt.Sprintf(" [Value:%d Effort:%d]", card.Value, card.Effort)
+	}
+	
+	// Handle form updates
+	if m.state == StateCardForm && m.cardForm != nil {
+		form, cmd := m.cardForm.Update(msg)
+		if f, ok := form.(*huh.Form); ok {
+			m.cardForm = f
+		}
+		return m, cmd
+	}
+	
+	return m, nil
+}
+
+// handleBoardKeys handles keyboard input for the board view
+func (m *Model) handleBoardKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "left", "h":
+		m.moveLeft()
+	case "right", "l":
+		m.moveRight()
+	case "up", "k":
+		m.moveUp()
+	case "down", "j":
+		m.moveDown()
+	case "n":
+		m.startNewCard()
+		return m, m.cardForm.Init()
+	case "enter":
+		m.startEditCard()
+		return m, m.cardForm.Init()
+	case "d":
+		m.startDeleteCard()
+	case "r":
+		m.loadData()
+	}
+	return m, nil
+}
+
+// handleFormKeys handles keyboard input for the form view
+func (m *Model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.state = StateBoard
+		return m, nil
+	}
+	
+	// Check if form is complete
+	if m.cardForm.State == huh.StateCompleted {
+		m.saveCard()
+		m.state = StateBoard
+		return m, nil
+	}
+	
+	return m, nil
+}
+
+// handleConfirmKeys handles keyboard input for the confirmation dialog
+func (m *Model) handleConfirmKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		m.confirmDelete()
+		m.state = StateBoard
+	case "n", "N", "esc":
+		m.state = StateBoard
+	}
+	return m, nil
+}
+
+// Navigation methods
+func (m *Model) moveLeft() {
+	if m.currentCol > 0 {
+		m.currentCol--
+		m.currentRow = 0
+	}
+}
+
+func (m *Model) moveRight() {
+	if m.currentCol < len(m.lists)-1 {
+		m.currentCol++
+		m.currentRow = 0
+	}
+}
+
+func (m *Model) moveUp() {
+	if m.currentRow > 0 {
+		m.currentRow--
+	}
+}
+
+func (m *Model) moveDown() {
+	if m.currentCol < len(m.lists) {
+		list := m.lists[m.currentCol]
+		cards := m.cards[list.Id]
+		if m.currentRow < len(cards)-1 {
+			m.currentRow++
+		}
+	}
+}
+
+// Card management methods
+func (m *Model) startNewCard() {
+	if m.currentCol >= len(m.lists) {
+		return
+	}
+	
+	m.editingCard = nil
+	m.editingList = m.lists[m.currentCol]
+	m.state = StateCardForm
+	m.createCardForm("", "", 0, 0)
+}
+
+func (m *Model) startEditCard() {
+	if m.currentCol >= len(m.lists) {
+		return
+	}
+	
+	list := m.lists[m.currentCol]
+	cards := m.cards[list.Id]
+	
+	if m.currentRow >= len(cards) {
+		return
+	}
+	
+	card := cards[m.currentRow]
+	m.editingCard = card
+	m.editingList = list
+	m.state = StateCardForm
+	m.createCardForm(card.Name, card.Description, card.Value, card.Effort)
+}
+
+func (m *Model) startDeleteCard() {
+	if m.currentCol >= len(m.lists) {
+		return
+	}
+	
+	list := m.lists[m.currentCol]
+	cards := m.cards[list.Id]
+	
+	if m.currentRow >= len(cards) {
+		return
+	}
+	
+	card := cards[m.currentRow]
+	m.deleteCard = card
+	m.confirmMsg = fmt.Sprintf("Delete card '%s'?", card.Name)
+	m.state = StateConfirmDelete
+}
+
+func (m *Model) createCardForm(name, description string, value, effort int) {
+	valueStr := ""
+	effortStr := ""
+	if value > 0 {
+		valueStr = strconv.Itoa(value)
+	}
+	if effort > 0 {
+		effortStr = strconv.Itoa(effort)
+	}
+	
+	// Create form fields with proper key references
+	nameField := huh.NewInput().
+		Key("name").
+		Title("Card Name").
+		Value(&name).
+		Validate(func(s string) error {
+			if strings.TrimSpace(s) == "" {
+				return fmt.Errorf("name is required")
+			}
+			return nil
+		})
+	
+	descField := huh.NewText().
+		Key("description").
+		Title("Description").
+		Value(&description)
+	
+	valueField := huh.NewInput().
+		Key("value").
+		Title("Value").
+		Value(&valueStr).
+		Validate(func(s string) error {
+			if s == "" {
+				return nil
+			}
+			if _, err := strconv.Atoi(s); err != nil {
+				return fmt.Errorf("value must be a number")
+			}
+			return nil
+		})
+	
+	effortField := huh.NewInput().
+		Key("effort").
+		Title("Effort").
+		Value(&effortStr).
+		Validate(func(s string) error {
+			if s == "" {
+				return nil
+			}
+			if _, err := strconv.Atoi(s); err != nil {
+				return fmt.Errorf("effort must be a number")
+			}
+			return nil
+		})
+	
+	m.cardForm = huh.NewForm(
+		huh.NewGroup(nameField, descField, valueField, effortField),
+	)
+}
+
+func (m *Model) saveCard() {
+	if m.cardForm == nil || m.editingList == nil {
+		return
+	}
+	
+	// Extract form values using the proper keys
+	nameInput := m.cardForm.GetString("name")
+	descInput := m.cardForm.GetString("description")
+	valueInput := m.cardForm.GetString("value")
+	effortInput := m.cardForm.GetString("effort")
+	
+	if strings.TrimSpace(nameInput) == "" {
+		return
+	}
+	
+	value := 0
+	effort := 0
+	
+	if valueInput != "" {
+		value, _ = strconv.Atoi(valueInput)
+	}
+	if effortInput != "" {
+		effort, _ = strconv.Atoi(effortInput)
+	}
+	
+	if m.editingCard == nil {
+		// Create new card
+		newCard := &backend.Card{
+			Id:          uuid.New().String(),
+			Name:        nameInput,
+			Description: descInput,
+			Value:       value,
+			Effort:      effort,
+			ListId:      m.editingList.Id,
+		}
+		newCard.SetBackend(m.board.GetBackend())
+		if err := m.board.GetBackend().AddCard(m.ctx, newCard); err == nil {
+			m.loadData()
+		}
+	} else {
+		// Update existing card
+		m.editingCard.Name = nameInput
+		m.editingCard.Description = descInput
+		m.editingCard.Value = value
+		m.editingCard.Effort = effort
+		m.editingCard.SetBackend(m.board.GetBackend())
+		if err := m.editingCard.Update(m.ctx); err == nil {
+			m.loadData()
+		}
+	}
+}
+
+func (m *Model) confirmDelete() {
+	if m.deleteCard == nil {
+		return
+	}
+	
+	if err := m.board.GetBackend().DeleteCard(m.ctx, m.deleteCard.Id); err == nil {
+		m.loadData()
+	}
+}
+
+// View renders the current view
+func (m *Model) View() string {
+	switch m.state {
+	case StateBoard:
+		return m.viewBoard()
+	case StateCardForm:
+		return m.viewCardForm()
+	case StateConfirmDelete:
+		return m.viewConfirmDelete()
+	}
+	return ""
+}
+
+func (m *Model) viewBoard() string {
+	if len(m.lists) == 0 {
+		return "No lists found"
+	}
+	
+	// Styles
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("15")).
+		Background(lipgloss.Color("63")).
+		Padding(0, 1)
+	
+	listStyle := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("238")).
+		Padding(1).
+		Width(25).
+		Height(m.height - 8)
+	
+	selectedListStyle := listStyle.Copy().
+		BorderForeground(lipgloss.Color("12"))
+	
+	cardStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(0, 1).
+		Margin(0, 0, 1, 0)
+	
+	selectedCardStyle := cardStyle.Copy().
+		BorderForeground(lipgloss.Color("12")).
+		Background(lipgloss.Color("18"))
+	
+	// Build title
+	title := titleStyle.Render(fmt.Sprintf(" %s ", m.board.Name))
+	
+	// Build lists
+	var lists []string
+	for i, list := range m.lists {
+		var cards []string
+		listCards := m.cards[list.Id]
+		
+		if len(listCards) == 0 {
+			cards = append(cards, lipgloss.NewStyle().
+				Foreground(lipgloss.Color("240")).
+				Render("(empty)\nPress 'n' to add a new card"))
+		} else {
+			for j, card := range listCards {
+				cardText := card.Name
+				if card.Description != "" {
+					cardText += "\n" + lipgloss.NewStyle().
+						Foreground(lipgloss.Color("240")).
+						Render(card.Description)
+				}
+				if card.Value > 0 || card.Effort > 0 {
+					cardText += "\n" + lipgloss.NewStyle().
+						Foreground(lipgloss.Color("33")).
+						Render(fmt.Sprintf("V:%d E:%d", card.Value, card.Effort))
+				}
+				
+				style := cardStyle
+				if i == m.currentCol && j == m.currentRow {
+					style = selectedCardStyle
+				}
+				cards = append(cards, style.Render(cardText))
+			}
 		}
 		
-		listView.AddItem(primary, secondary, 0, func() {
-			v.editCard(ctx, card)
-		})
-	}
-
-	if listView.GetItemCount() == 0 {
-		listView.AddItem("(empty)", "Press 'n' to add a new card", 0, nil)
-	}
-
-	return nil
-}
-
-func (v *View) setupLayout() {
-	numCols := len(v.lists)
-	if numCols == 0 {
-		return
-	}
-
-	// Calculate column widths
-	colWidth := 100 / numCols
-
-	// Set up grid with dynamic columns
-	v.grid.SetRows(0, 3) // Main area and footer
-	cols := make([]int, numCols)
-	for i := range cols {
-		cols[i] = colWidth
-	}
-	v.grid.SetColumns(cols...)
-
-	// Add list views to grid
-	for i, listView := range v.listViews {
-		v.grid.AddItem(listView, 0, i, 1, 1, 0, 0, false)
-	}
-
-	// Add footer
-	v.grid.AddItem(v.footer, 1, 0, 1, numCols, 0, 0, false)
-
-	v.SetRoot(v.grid, true)
-}
-
-func (v *View) setupKeyBindings() {
-	v.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Key() {
-		case tcell.KeyEscape, tcell.KeyCtrlC:
-			v.Stop()
-			return nil
-		case tcell.KeyRune:
-			switch event.Rune() {
-			case 'q':
-				v.Stop()
-				return nil
-			case 'n':
-				v.createNewCard()
-				return nil
-			case 'd':
-				v.deleteCurrentCard()
-				return nil
-			case 'r':
-				v.refreshBoard()
-				return nil
-			}
-		case tcell.KeyLeft:
-			v.moveLeft()
-			return nil
-		case tcell.KeyRight:
-			v.moveRight()
-			return nil
-		case tcell.KeyEnter:
-			v.editCurrentCard()
-			return nil
+		listContent := strings.Join(cards, "\n")
+		listTitle := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("15")).
+			Render(list.Name)
+		
+		style := listStyle
+		if i == m.currentCol {
+			style = selectedListStyle
 		}
-		return event
-	})
-}
-
-func (v *View) highlightColumn(col int) {
-	if col < 0 || col >= len(v.listViews) {
-		return
+		
+		lists = append(lists, style.Render(listTitle+"\n\n"+listContent))
 	}
-
-	// Remove focus from all columns
-	for i, listView := range v.listViews {
-		if i == col {
-			listView.SetBorderColor(tcell.ColorYellow)
-			v.SetFocus(listView)
-		} else {
-			listView.SetBorderColor(tcell.ColorWhite)
-		}
-	}
-	v.currentCol = col
-}
-
-func (v *View) moveLeft() {
-	if v.currentCol > 0 {
-		v.highlightColumn(v.currentCol - 1)
-	}
-}
-
-func (v *View) moveRight() {
-	if v.currentCol < len(v.listViews)-1 {
-		v.highlightColumn(v.currentCol + 1)
-	}
-}
-
-func (v *View) createNewCard() {
-	if v.currentCol >= len(v.lists) {
-		return
-	}
-
-	v.showCardForm(context.Background(), nil, v.lists[v.currentCol])
-}
-
-func (v *View) editCurrentCard() {
-	if v.currentCol >= len(v.listViews) {
-		return
-	}
-
-	listView := v.listViews[v.currentCol]
-	currentIndex := listView.GetCurrentItem()
-	if currentIndex < 0 {
-		return
-	}
-
-	// Get the card from the backend
-	list := v.lists[v.currentCol]
-	cards, err := list.Cards(context.Background())
-	if err != nil || currentIndex >= len(cards) {
-		return
-	}
-
-	v.showCardForm(context.Background(), cards[currentIndex], list)
-}
-
-func (v *View) editCard(ctx context.Context, card *backend.Card) {
-	list, err := card.List(ctx)
-	if err != nil {
-		return
-	}
-	v.showCardForm(ctx, card, list)
-}
-
-func (v *View) deleteCurrentCard() {
-	if v.currentCol >= len(v.listViews) {
-		return
-	}
-
-	listView := v.listViews[v.currentCol]
-	currentIndex := listView.GetCurrentItem()
-	if currentIndex < 0 {
-		return
-	}
-
-	// Get the card from the backend
-	list := v.lists[v.currentCol]
-	cards, err := list.Cards(context.Background())
-	if err != nil || currentIndex >= len(cards) {
-		return
-	}
-
-	card := cards[currentIndex]
 	
-	// Show confirmation dialog
-	modal := tview.NewModal().
-		SetText(fmt.Sprintf("Delete card '%s'?", card.Name)).
-		AddButtons([]string{"Delete", "Cancel"}).
-		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			if buttonLabel == "Delete" {
-				// Delete the card through the board's backend
-				if err := v.Board.GetBackend().DeleteCard(context.Background(), card.Id); err == nil {
-					v.refreshBoard()
-				}
-			}
-			v.SetRoot(v.grid, true)
-		})
-
-	v.SetRoot(modal, false)
-}
-
-func (v *View) showCardForm(ctx context.Context, card *backend.Card, list *backend.List) {
-	form := tview.NewForm()
+	// Build footer
+	footer := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240")).
+		Render("Navigation: ←→ Move between lists | ↑↓ Move between cards | Enter Edit card | n New card | d Delete card | r Refresh | q Quit")
 	
-	var name, description string
-	var value, effort int
+	// Layout
+	board := lipgloss.JoinHorizontal(lipgloss.Top, lists...)
 	
-	if card != nil {
-		name = card.Name
-		description = card.Description
-		value = card.Value
-		effort = card.Effort
+	return lipgloss.JoinVertical(
+		lipgloss.Center,
+		title,
+		"",
+		board,
+		"",
+		footer,
+	)
+}
+
+func (m *Model) viewCardForm() string {
+	if m.cardForm == nil {
+		return "Loading form..."
 	}
-
-	form.AddInputField("Name", name, 50, nil, func(text string) {
-		name = text
-	}).
-	AddInputField("Description", description, 50, nil, func(text string) {
-		description = text
-	}).
-	AddInputField("Value", strconv.Itoa(value), 10, func(textToCheck string, lastChar rune) bool {
-		_, err := strconv.Atoi(textToCheck)
-		return err == nil || textToCheck == ""
-	}, func(text string) {
-		if text == "" {
-			value = 0
-		} else {
-			value, _ = strconv.Atoi(text)
-		}
-	}).
-	AddInputField("Effort", strconv.Itoa(effort), 10, func(textToCheck string, lastChar rune) bool {
-		_, err := strconv.Atoi(textToCheck)
-		return err == nil || textToCheck == ""
-	}, func(text string) {
-		if text == "" {
-			effort = 0
-		} else {
-			effort, _ = strconv.Atoi(text)
-		}
-	}).
-	AddButton("Save", func() {
-		if name == "" {
-			return
-		}
-
-		if card == nil {
-			// Create new card
-			newCard := &backend.Card{
-				Id:          uuid.New().String(),
-				Name:        name,
-				Description: description,
-				Value:       value,
-				Effort:      effort,
-				ListId:      list.Id,
-			}
-			newCard.SetBackend(v.Board.GetBackend())
-			if err := v.Board.GetBackend().AddCard(ctx, newCard); err == nil {
-				v.refreshBoard()
-			}
-		} else {
-			// Update existing card
-			card.Name = name
-			card.Description = description
-			card.Value = value
-			card.Effort = effort
-			card.SetBackend(v.Board.GetBackend())
-			if err := card.Update(ctx); err == nil {
-				v.refreshBoard()
-			}
-		}
-
-		v.SetRoot(v.grid, true)
-	}).
-	AddButton("Cancel", func() {
-		v.SetRoot(v.grid, true)
-	})
-
-	form.SetBorder(true).SetTitle(" Card Details ")
-	v.SetRoot(form, true)
-}
-
-func (v *View) refreshBoard() {
-	for i, list := range v.lists {
-		if i < len(v.listViews) {
-			v.loadCards(context.Background(), v.listViews[i], list)
-		}
+	
+	title := "New Card"
+	if m.editingCard != nil {
+		title = "Edit Card"
 	}
+	
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("15")).
+		Background(lipgloss.Color("63")).
+		Padding(0, 1)
+	
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		titleStyle.Render(fmt.Sprintf(" %s ", title)),
+		"",
+		m.cardForm.View(),
+		"",
+		lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Render("Press Esc to cancel"),
+	)
 }
 
-func (v *View) Run() error {
-	return v.Application.Run()
+func (m *Model) viewConfirmDelete() string {
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("15")).
+		Background(lipgloss.Color("124")).
+		Padding(0, 1)
+	
+	return lipgloss.JoinVertical(
+		lipgloss.Center,
+		titleStyle.Render(" Confirm Delete "),
+		"",
+		m.confirmMsg,
+		"",
+		"Press Y to confirm, N to cancel",
+	)
 }
+
+// Run starts the bubbletea program
+func (m *Model) Run() error {
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	_, err := p.Run()
+	return err
+}
+
+
