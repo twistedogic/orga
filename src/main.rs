@@ -10,12 +10,18 @@ use orga::memory::MemoryStore;
 use orga::models::Ticket;
 
 #[derive(Parser)]
-#[command(name = "orga", about = "Agent-native kanban board CLI")]
+#[command(
+    name = "orga",
+    about = "Kanban board CLI",
+    long_about = "orga lets you interact with shared kanban boards from the command line.\n\
+                  Manage tickets, communicate via comments, create sub-tickets,\n\
+                  manage checklists, and track working context — all through the board."
+)]
 struct Cli {
-    #[arg(long, global = true, help = "Path to config file")]
+    #[arg(long, global = true, help = "Path to config file (default: ~/.orga/config.toml)")]
     config: Option<String>,
 
-    #[arg(long, global = true, help = "Output as JSON")]
+    #[arg(long, global = true, help = "Output as JSON instead of human-readable text")]
     json: bool,
 
     #[command(subcommand)]
@@ -24,34 +30,85 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    #[command(subcommand)]
+    #[command(subcommand, about = "Manage tickets on the board")]
     Ticket(TicketCommands),
-    #[command(subcommand)]
+    #[command(subcommand, about = "Manage checklist items on a ticket")]
     Checklist(ChecklistCommands),
-    #[command(subcommand)]
+    #[command(subcommand, about = "Read and write per-ticket memory")]
     Memory(MemoryCommands),
 }
 
 #[derive(Subcommand)]
 enum TicketCommands {
+    #[command(about = "List all tickets assigned to you")]
     List,
-    Show { id: String },
-    Comment { id: String, text: String },
-    Assign { id: String, username: String },
-    Move { id: String, list: String },
-    CreateSub { parent_id: String, title: String },
+    #[command(about = "Show full details of a ticket including comments and checklists")]
+    Show {
+        #[arg(help = "Ticket ID")]
+        id: String,
+    },
+    #[command(about = "Post a comment on a ticket")]
+    Comment {
+        #[arg(help = "Ticket ID")]
+        id: String,
+        #[arg(help = "Comment text")]
+        text: String,
+    },
+    #[command(about = "Assign a ticket to a teammate by their board username")]
+    Assign {
+        #[arg(help = "Ticket ID")]
+        id: String,
+        #[arg(help = "Board username (e.g. @alice or alice)")]
+        username: String,
+    },
+    #[command(about = "Move a ticket to a different list (column) by name")]
+    Move {
+        #[arg(help = "Ticket ID")]
+        id: String,
+        #[arg(help = "Target list name (e.g. \"In Progress\")")]
+        list: String,
+    },
+    #[command(about = "Create a sub-ticket linked to a parent ticket")]
+    CreateSub {
+        #[arg(help = "Parent ticket ID")]
+        parent_id: String,
+        #[arg(help = "Title of the new sub-ticket")]
+        title: String,
+    },
 }
 
 #[derive(Subcommand)]
 enum ChecklistCommands {
-    Add { ticket_id: String, text: String },
-    Check { ticket_id: String, item_id: String },
+    #[command(about = "Add a checklist item to a ticket")]
+    Add {
+        #[arg(help = "Ticket ID")]
+        ticket_id: String,
+        #[arg(help = "Checklist item text")]
+        text: String,
+    },
+    #[command(about = "Mark a checklist item as complete")]
+    Check {
+        #[arg(help = "Ticket ID")]
+        ticket_id: String,
+        #[arg(help = "Checklist item ID")]
+        item_id: String,
+    },
 }
 
 #[derive(Subcommand)]
 enum MemoryCommands {
-    Set { ticket_id: String, context: String },
-    Get { ticket_id: String },
+    #[command(about = "Save working context for a ticket (overwrites previous value)")]
+    Set {
+        #[arg(help = "Ticket ID")]
+        ticket_id: String,
+        #[arg(help = "Context text to store")]
+        context: String,
+    },
+    #[command(about = "Retrieve saved working context for a ticket")]
+    Get {
+        #[arg(help = "Ticket ID")]
+        ticket_id: String,
+    },
 }
 
 fn main() {
