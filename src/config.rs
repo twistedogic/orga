@@ -8,7 +8,6 @@ use crate::error::OrgaError;
 #[derive(Debug, Deserialize)]
 pub struct AgentConfig {
     pub name: String,
-    pub trello_member_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -21,6 +20,7 @@ pub struct BoardConfig {
 pub struct TrelloConfig {
     pub api_key: String,
     pub token: String,
+    pub member_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,6 +86,7 @@ impl AppConfig {
         }
         Ok(())
     }
+
 }
 
 fn default_config_path() -> PathBuf {
@@ -117,7 +118,6 @@ mod tests {
     const VALID_CONFIG: &str = r#"
 [agent]
 name = "agent-1"
-trello_member_id = "abc123"
 
 [board]
 id = "board-xyz"
@@ -126,13 +126,14 @@ backend = "trello"
 [trello]
 api_key = "key"
 token = "tok"
+member_id = "abc123"
 "#;
 
     #[test]
     fn valid_config_loads() {
         let f = write_config(VALID_CONFIG);
         let cfg = AppConfig::load(f.path()).unwrap();
-        assert_eq!(cfg.agent.trello_member_id, "abc123");
+        assert_eq!(cfg.trello.unwrap().member_id, "abc123");
         assert_eq!(cfg.board.backend, "trello");
     }
 
@@ -149,7 +150,6 @@ token = "tok"
         let content = r#"
 [agent]
 name = "agent-1"
-trello_member_id = "abc123"
 
 [board]
 id = "board-xyz"

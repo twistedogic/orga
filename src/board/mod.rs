@@ -25,7 +25,7 @@ pub fn build_board(config: &AppConfig) -> Result<Box<dyn Board>, OrgaError> {
                 trello_cfg.api_key.clone(),
                 trello_cfg.token.clone(),
                 config.board.id.clone(),
-                config.agent.trello_member_id.clone(),
+                trello_cfg.member_id.clone(),
             );
             Ok(Box::new(backend))
         }

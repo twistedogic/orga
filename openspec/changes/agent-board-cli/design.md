@@ -48,7 +48,7 @@ Each backend is a struct implementing this trait. The CLI resolves the backend f
 
 Trello has a well-documented REST API. The Trello backend will use `reqwest` (blocking) for HTTP calls and `serde_json` for deserialization. Webhook support is deferred — the skill polls via `orga ticket list`.
 
-Assignment in Trello maps to card members. "Agent identity" in config holds the Trello member ID so the backend can filter `GET /members/{id}/cards`.
+Assignment in Trello maps to card members. The Trello backend reads `member_id` from its own `[trello]` config section to filter `GET /members/{id}/cards`. Agent identity in `[agent]` is backend-agnostic (name only); each backend config block carries the backend-specific identity for that backend.
 
 ### 4. Memory store: SQLite via `rusqlite`
 
@@ -65,7 +65,6 @@ TOML is human-writable, unambiguous, and idiomatic for Rust tooling (Cargo uses 
 ```toml
 [agent]
 name = "agent-1"
-trello_member_id = "abc123"
 
 [board]
 id = "board-xyz"
@@ -74,10 +73,13 @@ backend = "trello"
 [trello]
 api_key = "..."
 token = "..."
+member_id = "abc123"
 
 [memory]
 path = "~/.orga/memory.db"
 ```
+
+`[agent]` captures backend-agnostic identity. Each backend config block carries its own identity field (e.g., `member_id` for Trello, `account_id` for a future Jira backend). Only the active backend's identity field is used.
 
 ### 6. Output: human-readable default, `--json` flag
 
