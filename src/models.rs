@@ -44,6 +44,7 @@ pub struct Ticket {
     pub list_id: String,
     pub list_name: String,
     pub url: String,
+    pub completed: bool,
     pub assignees: Vec<Member>,
     pub checklists: Vec<Checklist>,
     pub comments: Vec<Comment>,

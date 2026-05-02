@@ -152,6 +152,7 @@ impl TrelloBackend {
             list_id: card.id_list,
             list_name,
             url: card.url,
+            completed: card.closed,
             assignees,
             checklists,
             comments,
@@ -189,7 +190,7 @@ impl Board for TrelloBackend {
             .client
             .get(&url)
             .query(&self.auth_params())
-            .query(&[("filter", "open")])
+            .query(&[("filter", "all")])
             .send()?;
         self.check_status(&resp)?;
         let cards: Vec<TrelloCard> = resp.json().map_err(|e| OrgaError::BackendError(e.to_string()))?;
@@ -321,6 +322,7 @@ struct TrelloCard {
     id_list: String,
     id_board: String,
     url: String,
+    closed: bool,
     checklists: Option<Vec<TrelloChecklist>>,
     members: Option<Vec<TrelloMember>>,
     actions: Option<Vec<TrelloAction>>,

@@ -46,7 +46,12 @@ enum Commands {
 #[derive(Subcommand)]
 enum TicketCommands {
     #[command(about = "List all tickets assigned to you")]
-    List,
+    List {
+        #[arg(long, help = "Show only completed tickets", conflicts_with = "all")]
+        completed: bool,
+        #[arg(long, help = "Show all tickets regardless of status", conflicts_with = "completed")]
+        all: bool,
+    },
     #[command(about = "Show full details of a ticket including comments and checklists")]
     Show {
         #[arg(help = "Ticket ID")]
@@ -146,8 +151,15 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
         Commands::Ticket(cmd) => {
             let board = build_board(&config)?;
             match cmd {
-                TicketCommands::List => {
+                TicketCommands::List { completed, all } => {
                     let tickets = board.list_assigned()?;
+                    let tickets: Vec<_> = if all {
+                        tickets
+                    } else if completed {
+                        tickets.into_iter().filter(|t| t.completed).collect()
+                    } else {
+                        tickets.into_iter().filter(|t| !t.completed).collect()
+                    };
                     if cli.json {
                         println!("{}", serde_json::to_string_pretty(&tickets).unwrap());
                     } else {
@@ -272,9 +284,10 @@ fn print_ticket_list(tickets: &[Ticket]) {
 
 fn print_ticket_detail(t: &Ticket) {
     println!("# {}", t.title);
-    println!("ID:   {}", t.id);
-    println!("List: {}", t.list_name);
-    println!("URL:  {}", t.url);
+    println!("ID:        {}", t.id);
+    println!("List:      {}", t.list_name);
+    println!("URL:       {}", t.url);
+    println!("Completed: {}", if t.completed { "yes" } else { "no" });
     if !t.assignees.is_empty() {
         let names: Vec<&str> = t.assignees.iter().map(|m| m.username.as_str()).collect();
         println!("Assignees: {}", names.join(", "));

@@ -51,6 +51,7 @@ impl Board for MockBoard {
             list_id: "list-1".into(),
             list_name: "To Do".into(),
             url: "https://trello.com/c/sub-1".into(),
+            completed: false,
             assignees: vec![],
             checklists: vec![],
             comments: vec![],
@@ -84,6 +85,7 @@ fn sample_ticket() -> Ticket {
         list_id: "list-1".into(),
         list_name: "In Progress".into(),
         url: "https://trello.com/c/abc123".into(),
+        completed: false,
         assignees: vec![Member {
             id: "m1".into(),
             username: "agent-1".into(),
@@ -173,6 +175,59 @@ fn ticket_json_serializable() {
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["id"], "abc123");
     assert_eq!(parsed["title"], "Fix login bug");
+    assert_eq!(parsed["completed"], false);
     assert!(parsed["comments"].is_array());
     assert!(parsed["checklists"].is_array());
+}
+
+fn completed_ticket() -> Ticket {
+    Ticket {
+        id: "done1".into(),
+        title: "Closed ticket".into(),
+        description: String::new(),
+        list_id: "list-3".into(),
+        list_name: "Done".into(),
+        url: "https://trello.com/c/done1".into(),
+        completed: true,
+        assignees: vec![],
+        checklists: vec![],
+        comments: vec![],
+    }
+}
+
+#[test]
+fn list_assigned_returns_all_tickets() {
+    let board = MockBoard::with_tickets(vec![sample_ticket(), completed_ticket()]);
+    let tickets = board.list_assigned().unwrap();
+    assert_eq!(tickets.len(), 2);
+}
+
+#[test]
+fn filter_open_tickets() {
+    let all = vec![sample_ticket(), completed_ticket()];
+    let open: Vec<_> = all.iter().filter(|t| !t.completed).collect();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].id, "abc123");
+}
+
+#[test]
+fn filter_completed_tickets() {
+    let all = vec![sample_ticket(), completed_ticket()];
+    let done: Vec<_> = all.iter().filter(|t| t.completed).collect();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0].id, "done1");
+}
+
+#[test]
+fn filter_all_tickets() {
+    let all = vec![sample_ticket(), completed_ticket()];
+    assert_eq!(all.len(), 2);
+}
+
+#[test]
+fn completed_ticket_json_has_completed_true() {
+    let t = completed_ticket();
+    let json = serde_json::to_string(&t).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["completed"], true);
 }
