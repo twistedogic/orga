@@ -37,6 +37,10 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    pub fn try_load(path: &Path) -> Option<Self> {
+        Self::load(path).ok()
+    }
+
     pub fn load(path: &Path) -> Result<Self, OrgaError> {
         let content = fs::read_to_string(path).map_err(|e| {
             OrgaError::ConfigError(format!(
@@ -128,6 +132,24 @@ api_key = "key"
 token = "tok"
 member_id = "abc123"
 "#;
+
+    #[test]
+    fn try_load_returns_none_for_missing_file() {
+        assert!(AppConfig::try_load(Path::new("/nonexistent/config.toml")).is_none());
+    }
+
+    #[test]
+    fn try_load_returns_none_for_invalid_toml() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"not valid toml [[[").unwrap();
+        assert!(AppConfig::try_load(f.path()).is_none());
+    }
+
+    #[test]
+    fn try_load_returns_some_for_valid_config() {
+        let f = write_config(VALID_CONFIG);
+        assert!(AppConfig::try_load(f.path()).is_some());
+    }
 
     #[test]
     fn valid_config_loads() {

@@ -24,7 +24,6 @@ The config file SHALL support the following structure:
 ```toml
 [agent]
 name = "agent-1"
-trello_member_id = "abc123"
 
 [board]
 id = "board-xyz"
@@ -33,12 +32,13 @@ backend = "trello"
 [trello]
 api_key = "..."
 token = "..."
+member_id = "abc123"
 
 [memory]
 path = "~/.orga/memory.db"
 ```
 
-All fields under `[agent]`, `[board]`, and the backend-specific section SHALL be required. The `[memory]` section is optional; if absent, the default path is used.
+All fields under `[agent]`, `[board]`, and the backend-specific section SHALL be required. The `[memory]` section is optional; if absent, the default path is used. The `member_id` field SHALL live under `[trello]`, not `[agent]`.
 
 #### Scenario: Valid config
 - **WHEN** a valid config file is loaded

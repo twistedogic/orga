@@ -6,6 +6,7 @@ use serde_json::json;
 use orga::board::build_board;
 use orga::config::AppConfig;
 use orga::error::OrgaError;
+use orga::init::run_init;
 use orga::memory::MemoryStore;
 use orga::models::Ticket;
 
@@ -30,6 +31,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(about = "Interactive setup wizard to create or update config")]
+    Init,
     #[command(subcommand, about = "Manage tickets on the board")]
     Ticket(TicketCommands),
     #[command(subcommand, about = "Manage checklist items on a ticket")]
@@ -120,9 +123,15 @@ fn main() {
 
 fn run(cli: Cli) -> Result<(), OrgaError> {
     let config_path = AppConfig::resolve_path(cli.config.as_deref());
+
+    if let Commands::Init = cli.command {
+        return run_init(&config_path);
+    }
+
     let config = AppConfig::load(&config_path)?;
 
     match cli.command {
+        Commands::Init => unreachable!(),
         Commands::Ticket(cmd) => {
             let board = build_board(&config)?;
             match cmd {
