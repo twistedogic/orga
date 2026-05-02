@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::board::Board;
 use crate::error::OrgaError;
-use crate::models::{Checklist, ChecklistItem, Comment, Member, Ticket};
+use crate::models::{Checklist, ChecklistItem, Column, Comment, Member, Ticket};
 
 pub struct TrelloBackend {
     api_key: String,
@@ -279,6 +279,14 @@ impl Board for TrelloBackend {
             .as_str()
             .map(String::from)
             .ok_or_else(|| OrgaError::BackendError("no id in checkItem response".into()))
+    }
+
+    fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
+        Ok(self
+            .board_lists()?
+            .into_iter()
+            .map(|l| Column { id: l.id, name: l.name })
+            .collect())
     }
 
     fn check_item(&self, id: &str, item_id: &str) -> Result<(), OrgaError> {

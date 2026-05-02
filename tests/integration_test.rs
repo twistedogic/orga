@@ -2,7 +2,7 @@ use chrono::Utc;
 
 use orga::board::Board;
 use orga::error::OrgaError;
-use orga::models::{Checklist, Comment, Member, Ticket};
+use orga::models::{Checklist, Column, Comment, Member, Ticket};
 
 struct MockBoard {
     tickets: Vec<Ticket>,
@@ -66,6 +66,13 @@ impl Board for MockBoard {
             return Err(OrgaError::NotFound(item_id.to_string()));
         }
         Ok(())
+    }
+
+    fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
+        Ok(vec![
+            Column { id: "list-1".into(), name: "To Do".into() },
+            Column { id: "list-2".into(), name: "In Progress".into() },
+        ])
     }
 }
 

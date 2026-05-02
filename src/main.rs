@@ -8,7 +8,7 @@ use orga::config::AppConfig;
 use orga::error::OrgaError;
 use orga::init::run_init;
 use orga::memory::MemoryStore;
-use orga::models::Ticket;
+use orga::models::{Column, Ticket};
 
 #[derive(Parser)]
 #[command(
@@ -39,6 +39,8 @@ enum Commands {
     Checklist(ChecklistCommands),
     #[command(subcommand, about = "Read and write per-ticket memory")]
     Memory(MemoryCommands),
+    #[command(about = "List all columns on the board")]
+    Columns,
 }
 
 #[derive(Subcommand)]
@@ -132,6 +134,15 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
 
     match cli.command {
         Commands::Init => unreachable!(),
+        Commands::Columns => {
+            let board = build_board(&config)?;
+            let columns = board.list_columns()?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&columns).unwrap());
+            } else {
+                print_column_list(&columns);
+            }
+        }
         Commands::Ticket(cmd) => {
             let board = build_board(&config)?;
             match cmd {
@@ -242,6 +253,12 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
     }
 
     Ok(())
+}
+
+fn print_column_list(columns: &[Column]) {
+    for c in columns {
+        println!("{}\t{}", c.id, c.name);
+    }
 }
 
 fn print_ticket_list(tickets: &[Ticket]) {

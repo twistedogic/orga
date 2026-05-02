@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::error::OrgaError;
-use crate::models::Ticket;
+use crate::models::{Column, Ticket};
 
 pub mod trello;
 
@@ -13,6 +13,7 @@ pub trait Board {
     fn create_sub(&self, parent_id: &str, title: &str) -> Result<Ticket, OrgaError>;
     fn add_checklist_item(&self, id: &str, text: &str) -> Result<String, OrgaError>;
     fn check_item(&self, id: &str, item_id: &str) -> Result<(), OrgaError>;
+    fn list_columns(&self) -> Result<Vec<Column>, OrgaError>;
 }
 
 pub fn build_board(config: &AppConfig) -> Result<Box<dyn Board>, OrgaError> {
