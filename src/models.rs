@@ -38,7 +38,7 @@ pub struct Comment {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Ticket {
+pub struct TicketSummary {
     pub id: String,
     pub title: String,
     pub description: String,
@@ -47,6 +47,12 @@ pub struct Ticket {
     pub url: String,
     pub completed: bool,
     pub creator: Option<Member>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ticket {
+    #[serde(flatten)]
+    pub summary: TicketSummary,
     pub assignees: Vec<Member>,
     pub checklists: Vec<Checklist>,
     pub comments: Vec<Comment>,

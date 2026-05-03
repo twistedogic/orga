@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::board::Board;
 use crate::error::OrgaError;
-use crate::models::{Checklist, ChecklistItem, Column, Comment, Member, Ticket};
+use crate::models::{Checklist, ChecklistItem, Column, Comment, Member, Ticket, TicketSummary};
 
 pub struct TrelloBackend {
     api_key: String,
@@ -91,6 +91,32 @@ impl TrelloBackend {
         Ok(resp.id)
     }
 
+    fn card_to_summary(&self, card: &TrelloCard, list_name: String) -> TicketSummary {
+        let creator: Option<Member> = card
+            .actions
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find(|a| a.action_type == "createCard")
+            .and_then(|a| a.member_creator.as_ref())
+            .map(|m| Member {
+                id: m.id.clone(),
+                username: m.username.clone(),
+                full_name: m.full_name.clone(),
+            });
+
+        TicketSummary {
+            id: card.id.clone(),
+            title: card.name.clone(),
+            description: card.desc.clone().unwrap_or_default(),
+            list_id: card.id_list.clone(),
+            list_name,
+            url: card.url.clone(),
+            completed: card.closed,
+            creator,
+        }
+    }
+
     fn card_to_ticket(&self, card: TrelloCard, list_name: String) -> Result<Ticket, OrgaError> {
         let checklists: Vec<Checklist> = card
             .checklists
@@ -160,14 +186,16 @@ impl TrelloBackend {
             .collect();
 
         Ok(Ticket {
-            id: card.id,
-            title: card.name,
-            description: card.desc.unwrap_or_default(),
-            list_id: card.id_list,
-            list_name,
-            url: card.url,
-            completed: card.closed,
-            creator,
+            summary: TicketSummary {
+                id: card.id,
+                title: card.name,
+                description: card.desc.unwrap_or_default(),
+                list_id: card.id_list,
+                list_name,
+                url: card.url,
+                completed: card.closed,
+                creator,
+            },
             assignees,
             checklists,
             comments,
@@ -197,7 +225,7 @@ impl TrelloBackend {
 }
 
 impl Board for TrelloBackend {
-    fn list_assigned(&self) -> Result<Vec<Ticket>, OrgaError> {
+    fn list_assigned(&self) -> Result<Vec<TicketSummary>, OrgaError> {
         let url = format!(
             "https://api.trello.com/1/members/{}/cards",
             self.member_id
@@ -216,13 +244,13 @@ impl Board for TrelloBackend {
             .filter(|c| c.id_board == self.board_id)
             .collect();
 
-        cards
+        Ok(cards
             .into_iter()
             .map(|card| {
                 let list_name = self.get_list_name(&card.id_list).unwrap_or_default();
-                self.card_to_ticket(card, list_name)
+                self.card_to_summary(&card, list_name)
             })
-            .collect()
+            .collect())
     }
 
     fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError> {
@@ -272,7 +300,7 @@ impl Board for TrelloBackend {
         let url = "https://api.trello.com/1/cards";
         let resp = self.post_form(
             url,
-            &[("name", title), ("idList", &parent.list_id)],
+            &[("name", title), ("idList", &parent.summary.list_id)],
         )?;
         let sub_id = resp["id"]
             .as_str()
@@ -342,7 +370,7 @@ impl Board for TrelloBackend {
 
     fn return_ticket(&self, id: &str, comment: Option<&str>) -> Result<(), OrgaError> {
         let ticket = self.get_ticket(id)?;
-        let creator = ticket.creator.ok_or_else(|| {
+        let creator = ticket.summary.creator.ok_or_else(|| {
             OrgaError::BackendError("ticket has no known creator".into())
         })?;
         if let Some(text) = comment {

@@ -1,11 +1,11 @@
 use crate::config::AppConfig;
 use crate::error::OrgaError;
-use crate::models::{Column, Member, Ticket};
+use crate::models::{Column, Member, Ticket, TicketSummary};
 
 pub mod trello;
 
 pub trait Board {
-    fn list_assigned(&self) -> Result<Vec<Ticket>, OrgaError>;
+    fn list_assigned(&self) -> Result<Vec<TicketSummary>, OrgaError>;
     fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError>;
     fn comment(&self, id: &str, text: &str) -> Result<(), OrgaError>;
     fn assign(&self, id: &str, username: &str) -> Result<(), OrgaError>;

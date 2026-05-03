@@ -2,7 +2,7 @@ use chrono::Utc;
 
 use orga::board::Board;
 use orga::error::OrgaError;
-use orga::models::{Checklist, Column, Comment, Member, Ticket};
+use orga::models::{Checklist, Column, Comment, Member, Ticket, TicketSummary};
 
 struct MockBoard {
     tickets: Vec<Ticket>,
@@ -23,14 +23,14 @@ impl MockBoard {
 }
 
 impl Board for MockBoard {
-    fn list_assigned(&self) -> Result<Vec<Ticket>, OrgaError> {
-        Ok(self.tickets.clone())
+    fn list_assigned(&self) -> Result<Vec<TicketSummary>, OrgaError> {
+        Ok(self.tickets.iter().map(|t| t.summary.clone()).collect())
     }
 
     fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError> {
         self.tickets
             .iter()
-            .find(|t| t.id == id)
+            .find(|t| t.summary.id == id)
             .cloned()
             .ok_or_else(|| OrgaError::NotFound(id.to_string()))
     }
@@ -53,14 +53,16 @@ impl Board for MockBoard {
     fn create_sub(&self, parent_id: &str, title: &str) -> Result<Ticket, OrgaError> {
         let _parent = self.get_ticket(parent_id)?;
         Ok(Ticket {
-            id: "sub-1".into(),
-            title: title.into(),
-            description: String::new(),
-            list_id: "list-1".into(),
-            list_name: "To Do".into(),
-            url: "https://trello.com/c/sub-1".into(),
-            completed: false,
-            creator: None,
+            summary: TicketSummary {
+                id: "sub-1".into(),
+                title: title.into(),
+                description: String::new(),
+                list_id: "list-1".into(),
+                list_name: "To Do".into(),
+                url: "https://trello.com/c/sub-1".into(),
+                completed: false,
+                creator: None,
+            },
             assignees: vec![],
             checklists: vec![],
             comments: vec![],
@@ -91,7 +93,7 @@ impl Board for MockBoard {
 
     fn return_ticket(&self, id: &str, _comment: Option<&str>) -> Result<(), OrgaError> {
         let ticket = self.get_ticket(id)?;
-        ticket.creator.ok_or_else(|| OrgaError::BackendError("ticket has no known creator".into()))?;
+        ticket.summary.creator.ok_or_else(|| OrgaError::BackendError("ticket has no known creator".into()))?;
         Ok(())
     }
 }
@@ -106,18 +108,20 @@ fn sample_member() -> Member {
 
 fn sample_ticket() -> Ticket {
     Ticket {
-        id: "abc123".into(),
-        title: "Fix login bug".into(),
-        description: "The login page crashes on submit.".into(),
-        list_id: "list-1".into(),
-        list_name: "In Progress".into(),
-        url: "https://trello.com/c/abc123".into(),
-        completed: false,
-        creator: Some(Member {
-            id: "u2".into(),
-            username: "bob".into(),
-            full_name: "Bob".into(),
-        }),
+        summary: TicketSummary {
+            id: "abc123".into(),
+            title: "Fix login bug".into(),
+            description: "The login page crashes on submit.".into(),
+            list_id: "list-1".into(),
+            list_name: "In Progress".into(),
+            url: "https://trello.com/c/abc123".into(),
+            completed: false,
+            creator: Some(Member {
+                id: "u2".into(),
+                username: "bob".into(),
+                full_name: "Bob".into(),
+            }),
+        },
         assignees: vec![Member {
             id: "m1".into(),
             username: "agent-1".into(),
@@ -140,14 +144,16 @@ fn sample_ticket() -> Ticket {
 
 fn ticket_no_creator() -> Ticket {
     Ticket {
-        id: "no-creator".into(),
-        title: "Ticket without creator".into(),
-        description: String::new(),
-        list_id: "list-1".into(),
-        list_name: "To Do".into(),
-        url: "https://trello.com/c/no-creator".into(),
-        completed: false,
-        creator: None,
+        summary: TicketSummary {
+            id: "no-creator".into(),
+            title: "Ticket without creator".into(),
+            description: String::new(),
+            list_id: "list-1".into(),
+            list_name: "To Do".into(),
+            url: "https://trello.com/c/no-creator".into(),
+            completed: false,
+            creator: None,
+        },
         assignees: vec![],
         checklists: vec![],
         comments: vec![],
@@ -157,23 +163,23 @@ fn ticket_no_creator() -> Ticket {
 #[test]
 fn list_assigned_returns_tickets() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    let tickets = board.list_assigned().unwrap();
-    assert_eq!(tickets.len(), 1);
-    assert_eq!(tickets[0].id, "abc123");
+    let summaries = board.list_assigned().unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].id, "abc123");
 }
 
 #[test]
 fn list_assigned_empty() {
     let board = MockBoard::with_tickets(vec![]);
-    let tickets = board.list_assigned().unwrap();
-    assert!(tickets.is_empty());
+    let summaries = board.list_assigned().unwrap();
+    assert!(summaries.is_empty());
 }
 
 #[test]
 fn get_ticket_found() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
     let t = board.get_ticket("abc123").unwrap();
-    assert_eq!(t.title, "Fix login bug");
+    assert_eq!(t.summary.title, "Fix login bug");
     assert_eq!(t.comments.len(), 1);
 }
 
@@ -195,8 +201,8 @@ fn comment_empty_fails() {
 fn create_sub_links_to_parent() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
     let sub = board.create_sub("abc123", "Sub-task one").unwrap();
-    assert_eq!(sub.title, "Sub-task one");
-    assert_eq!(sub.list_id, "list-1");
+    assert_eq!(sub.summary.title, "Sub-task one");
+    assert_eq!(sub.summary.list_id, "list-1");
 }
 
 #[test]
@@ -225,16 +231,30 @@ fn ticket_json_serializable() {
     assert!(parsed["checklists"].is_array());
 }
 
+#[test]
+fn ticket_summary_json_has_no_detail_fields() {
+    let t = sample_ticket();
+    let json = serde_json::to_string(&t.summary).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["id"], "abc123");
+    assert_eq!(parsed["title"], "Fix login bug");
+    assert!(parsed.get("comments").is_none());
+    assert!(parsed.get("checklists").is_none());
+    assert!(parsed.get("assignees").is_none());
+}
+
 fn completed_ticket() -> Ticket {
     Ticket {
-        id: "done1".into(),
-        title: "Closed ticket".into(),
-        description: String::new(),
-        list_id: "list-3".into(),
-        list_name: "Done".into(),
-        url: "https://trello.com/c/done1".into(),
-        completed: true,
-        creator: None,
+        summary: TicketSummary {
+            id: "done1".into(),
+            title: "Closed ticket".into(),
+            description: String::new(),
+            list_id: "list-3".into(),
+            list_name: "Done".into(),
+            url: "https://trello.com/c/done1".into(),
+            completed: true,
+            creator: None,
+        },
         assignees: vec![],
         checklists: vec![],
         comments: vec![],
@@ -244,13 +264,14 @@ fn completed_ticket() -> Ticket {
 #[test]
 fn list_assigned_returns_all_tickets() {
     let board = MockBoard::with_tickets(vec![sample_ticket(), completed_ticket()]);
-    let tickets = board.list_assigned().unwrap();
-    assert_eq!(tickets.len(), 2);
+    let summaries = board.list_assigned().unwrap();
+    assert_eq!(summaries.len(), 2);
 }
 
 #[test]
 fn filter_open_tickets() {
-    let all = vec![sample_ticket(), completed_ticket()];
+    let board = MockBoard::with_tickets(vec![sample_ticket(), completed_ticket()]);
+    let all = board.list_assigned().unwrap();
     let open: Vec<_> = all.iter().filter(|t| !t.completed).collect();
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].id, "abc123");
@@ -258,7 +279,8 @@ fn filter_open_tickets() {
 
 #[test]
 fn filter_completed_tickets() {
-    let all = vec![sample_ticket(), completed_ticket()];
+    let board = MockBoard::with_tickets(vec![sample_ticket(), completed_ticket()]);
+    let all = board.list_assigned().unwrap();
     let done: Vec<_> = all.iter().filter(|t| t.completed).collect();
     assert_eq!(done.len(), 1);
     assert_eq!(done[0].id, "done1");
@@ -266,14 +288,15 @@ fn filter_completed_tickets() {
 
 #[test]
 fn filter_all_tickets() {
-    let all = vec![sample_ticket(), completed_ticket()];
+    let board = MockBoard::with_tickets(vec![sample_ticket(), completed_ticket()]);
+    let all = board.list_assigned().unwrap();
     assert_eq!(all.len(), 2);
 }
 
 #[test]
 fn completed_ticket_json_has_completed_true() {
     let t = completed_ticket();
-    let json = serde_json::to_string(&t).unwrap();
+    let json = serde_json::to_string(&t.summary).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["completed"], true);
 }
