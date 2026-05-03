@@ -12,16 +12,18 @@ pub struct TrelloBackend {
     token: String,
     board_id: String,
     member_id: String,
+    agent_name: String,
     client: Client,
 }
 
 impl TrelloBackend {
-    pub fn new(api_key: String, token: String, board_id: String, member_id: String) -> Self {
+    pub fn new(api_key: String, token: String, board_id: String, member_id: String, agent_name: String) -> Self {
         Self {
             api_key,
             token,
             board_id,
             member_id,
+            agent_name,
             client: Client::new(),
         }
     }
@@ -109,9 +111,19 @@ impl TrelloBackend {
             })
             .collect();
 
-        let comments: Vec<Comment> = card
-            .actions
-            .unwrap_or_default()
+        let actions = card.actions.unwrap_or_default();
+
+        let creator: Option<Member> = actions
+            .iter()
+            .find(|a| a.action_type == "createCard")
+            .and_then(|a| a.member_creator.as_ref())
+            .map(|m| Member {
+                id: m.id.clone(),
+                username: m.username.clone(),
+                full_name: m.full_name.clone(),
+            });
+
+        let comments: Vec<Comment> = actions
             .into_iter()
             .filter(|a| a.action_type == "commentCard")
             .filter_map(|a| {
@@ -121,6 +133,7 @@ impl TrelloBackend {
                 let at = DateTime::parse_from_rfc3339(&a.date)
                     .ok()?
                     .with_timezone(&chrono::Utc);
+                let (content, agent_name) = parse_agent_tag(&text);
                 Some(Comment {
                     id: a.id,
                     at,
@@ -129,7 +142,8 @@ impl TrelloBackend {
                         username: member.username,
                         full_name: member.full_name,
                     },
-                    content: text,
+                    content,
+                    agent_name,
                 })
             })
             .collect();
@@ -153,6 +167,7 @@ impl TrelloBackend {
             list_name,
             url: card.url,
             completed: card.closed,
+            creator,
             assignees,
             checklists,
             comments,
@@ -178,6 +193,7 @@ impl TrelloBackend {
             .map(String::from)
             .ok_or_else(|| OrgaError::BackendError("no id in checklist response".into()))
     }
+
 }
 
 impl Board for TrelloBackend {
@@ -190,7 +206,7 @@ impl Board for TrelloBackend {
             .client
             .get(&url)
             .query(&self.auth_params())
-            .query(&[("filter", "all")])
+            .query(&[("filter", "all"), ("actions", "createCard")])
             .send()?;
         self.check_status(&resp)?;
         let cards: Vec<TrelloCard> = resp.json().map_err(|e| OrgaError::BackendError(e.to_string()))?;
@@ -218,7 +234,7 @@ impl Board for TrelloBackend {
             .query(&[
                 ("checklists", "all"),
                 ("members", "true"),
-                ("actions", "commentCard"),
+                ("actions", "commentCard,createCard"),
             ])
             .send()?;
         self.check_status(&resp)?;
@@ -231,8 +247,9 @@ impl Board for TrelloBackend {
         if text.is_empty() {
             return Err(OrgaError::BackendError("comment text cannot be empty".into()));
         }
+        let tagged = append_agent_tag(text, &self.agent_name);
         let url = format!("https://api.trello.com/1/cards/{id}/actions/comments");
-        self.post_form(&url, &[("text", text)])?;
+        self.post_form(&url, &[("text", &tagged)])?;
         Ok(())
     }
 
@@ -305,6 +322,55 @@ impl Board for TrelloBackend {
         self.put_form(&url, &[("state", "complete")])?;
         Ok(())
     }
+
+    fn whoami(&self) -> Result<Member, OrgaError> {
+        let url = format!("https://api.trello.com/1/members/{}", self.member_id);
+        let resp = self
+            .client
+            .get(&url)
+            .query(&self.auth_params())
+            .query(&[("fields", "id,username,fullName")])
+            .send()?;
+        self.check_status(&resp)?;
+        let m: TrelloMember = resp.json().map_err(|e| OrgaError::BackendError(e.to_string()))?;
+        Ok(Member {
+            id: m.id,
+            username: m.username,
+            full_name: m.full_name,
+        })
+    }
+
+    fn return_ticket(&self, id: &str, comment: Option<&str>) -> Result<(), OrgaError> {
+        let ticket = self.get_ticket(id)?;
+        let creator = ticket.creator.ok_or_else(|| {
+            OrgaError::BackendError("ticket has no known creator".into())
+        })?;
+        if let Some(text) = comment {
+            self.comment(id, text)?;
+        }
+        self.assign(id, &creator.username)?;
+        Ok(())
+    }
+}
+
+fn append_agent_tag(text: &str, agent_name: &str) -> String {
+    if agent_name.is_empty() {
+        return text.to_string();
+    }
+    format!("{text}\n\n_[orga:{agent_name}]_")
+}
+
+fn parse_agent_tag(text: &str) -> (String, Option<String>) {
+    if let Some(pos) = text.rfind("\n\n_[orga:") {
+        let suffix = &text[pos + 2..];
+        if suffix.starts_with("_[orga:") && suffix.ends_with("]_") {
+            let inner = &suffix[7..suffix.len() - 2];
+            if !inner.is_empty() {
+                return (text[..pos].to_string(), Some(inner.to_string()));
+            }
+        }
+    }
+    (text.to_string(), None)
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,4 +431,37 @@ struct TrelloAction {
 #[derive(Debug, Deserialize)]
 struct TrelloActionData {
     text: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_agent_tag_adds_suffix() {
+        let result = append_agent_tag("hello", "agent-1");
+        assert_eq!(result, "hello\n\n_[orga:agent-1]_");
+    }
+
+    #[test]
+    fn append_agent_tag_empty_name_unchanged() {
+        let result = append_agent_tag("hello", "");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn parse_agent_tag_strips_and_extracts() {
+        let text = "need more context\n\n_[orga:agent-1]_";
+        let (content, agent_name) = parse_agent_tag(text);
+        assert_eq!(content, "need more context");
+        assert_eq!(agent_name, Some("agent-1".to_string()));
+    }
+
+    #[test]
+    fn parse_agent_tag_no_tag_unchanged() {
+        let text = "just a normal comment";
+        let (content, agent_name) = parse_agent_tag(text);
+        assert_eq!(content, "just a normal comment");
+        assert_eq!(agent_name, None);
+    }
 }

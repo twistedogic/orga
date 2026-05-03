@@ -41,6 +41,8 @@ enum Commands {
     Memory(MemoryCommands),
     #[command(about = "List all columns on the board")]
     Columns,
+    #[command(about = "Show the configured agent's board identity")]
+    Whoami,
 }
 
 #[derive(Subcommand)]
@@ -84,6 +86,13 @@ enum TicketCommands {
         parent_id: String,
         #[arg(help = "Title of the new sub-ticket")]
         title: String,
+    },
+    #[command(about = "Return a ticket to its creator, with an optional comment")]
+    Return {
+        #[arg(help = "Ticket ID")]
+        id: String,
+        #[arg(long, help = "Comment to post before returning")]
+        comment: Option<String>,
     },
 }
 
@@ -148,6 +157,15 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
                 print_column_list(&columns);
             }
         }
+        Commands::Whoami => {
+            let board = build_board(&config)?;
+            let member = board.whoami()?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&member).unwrap());
+            } else {
+                println!("@{} ({})", member.username, member.full_name);
+            }
+        }
         Commands::Ticket(cmd) => {
             let board = build_board(&config)?;
             match cmd {
@@ -210,6 +228,14 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
                         );
                     } else {
                         println!("created sub-ticket: {} ({})", sub.title, sub.url);
+                    }
+                }
+                TicketCommands::Return { id, comment } => {
+                    board.return_ticket(&id, comment.as_deref())?;
+                    if cli.json {
+                        println!("{}", json!({"ok": true}));
+                    } else {
+                        println!("returned {id} to creator");
                     }
                 }
             }
@@ -288,6 +314,9 @@ fn print_ticket_detail(t: &Ticket) {
     println!("List:      {}", t.list_name);
     println!("URL:       {}", t.url);
     println!("Completed: {}", if t.completed { "yes" } else { "no" });
+    if let Some(ref creator) = t.creator {
+        println!("Creator:   @{}", creator.username);
+    }
     if !t.assignees.is_empty() {
         let names: Vec<&str> = t.assignees.iter().map(|m| m.username.as_str()).collect();
         println!("Assignees: {}", names.join(", "));

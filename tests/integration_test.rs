@@ -6,11 +6,19 @@ use orga::models::{Checklist, Column, Comment, Member, Ticket};
 
 struct MockBoard {
     tickets: Vec<Ticket>,
+    whoami_member: Member,
 }
 
 impl MockBoard {
     fn with_tickets(tickets: Vec<Ticket>) -> Self {
-        Self { tickets }
+        Self {
+            tickets,
+            whoami_member: Member {
+                id: "agent-id".into(),
+                username: "agent-1".into(),
+                full_name: "Agent One".into(),
+            },
+        }
     }
 }
 
@@ -52,6 +60,7 @@ impl Board for MockBoard {
             list_name: "To Do".into(),
             url: "https://trello.com/c/sub-1".into(),
             completed: false,
+            creator: None,
             assignees: vec![],
             checklists: vec![],
             comments: vec![],
@@ -75,6 +84,24 @@ impl Board for MockBoard {
             Column { id: "list-2".into(), name: "In Progress".into() },
         ])
     }
+
+    fn whoami(&self) -> Result<Member, OrgaError> {
+        Ok(self.whoami_member.clone())
+    }
+
+    fn return_ticket(&self, id: &str, _comment: Option<&str>) -> Result<(), OrgaError> {
+        let ticket = self.get_ticket(id)?;
+        ticket.creator.ok_or_else(|| OrgaError::BackendError("ticket has no known creator".into()))?;
+        Ok(())
+    }
+}
+
+fn sample_member() -> Member {
+    Member {
+        id: "u1".into(),
+        username: "alice".into(),
+        full_name: "Alice".into(),
+    }
 }
 
 fn sample_ticket() -> Ticket {
@@ -86,6 +113,11 @@ fn sample_ticket() -> Ticket {
         list_name: "In Progress".into(),
         url: "https://trello.com/c/abc123".into(),
         completed: false,
+        creator: Some(Member {
+            id: "u2".into(),
+            username: "bob".into(),
+            full_name: "Bob".into(),
+        }),
         assignees: vec![Member {
             id: "m1".into(),
             username: "agent-1".into(),
@@ -99,13 +131,26 @@ fn sample_ticket() -> Ticket {
         comments: vec![Comment {
             id: "c1".into(),
             at: Utc::now(),
-            who: Member {
-                id: "u1".into(),
-                username: "alice".into(),
-                full_name: "Alice".into(),
-            },
+            who: sample_member(),
             content: "Please fix this ASAP.".into(),
+            agent_name: None,
         }],
+    }
+}
+
+fn ticket_no_creator() -> Ticket {
+    Ticket {
+        id: "no-creator".into(),
+        title: "Ticket without creator".into(),
+        description: String::new(),
+        list_id: "list-1".into(),
+        list_name: "To Do".into(),
+        url: "https://trello.com/c/no-creator".into(),
+        completed: false,
+        creator: None,
+        assignees: vec![],
+        checklists: vec![],
+        comments: vec![],
     }
 }
 
@@ -189,6 +234,7 @@ fn completed_ticket() -> Ticket {
         list_name: "Done".into(),
         url: "https://trello.com/c/done1".into(),
         completed: true,
+        creator: None,
         assignees: vec![],
         checklists: vec![],
         comments: vec![],
@@ -230,4 +276,89 @@ fn completed_ticket_json_has_completed_true() {
     let json = serde_json::to_string(&t).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["completed"], true);
+}
+
+#[test]
+fn whoami_returns_member() {
+    let board = MockBoard::with_tickets(vec![]);
+    let m = board.whoami().unwrap();
+    assert_eq!(m.id, "agent-id");
+    assert_eq!(m.username, "agent-1");
+    assert_eq!(m.full_name, "Agent One");
+}
+
+#[test]
+fn whoami_json_has_expected_fields() {
+    let board = MockBoard::with_tickets(vec![]);
+    let m = board.whoami().unwrap();
+    let json = serde_json::to_string(&m).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(parsed.get("id").is_some());
+    assert!(parsed.get("username").is_some());
+    assert!(parsed.get("full_name").is_some());
+}
+
+#[test]
+fn ticket_show_json_has_creator_field() {
+    let t = sample_ticket();
+    let json = serde_json::to_string(&t).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(parsed.get("creator").is_some());
+    assert_eq!(parsed["creator"]["username"], "bob");
+}
+
+#[test]
+fn ticket_show_json_creator_null_when_absent() {
+    let t = ticket_no_creator();
+    let json = serde_json::to_string(&t).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(parsed["creator"].is_null());
+}
+
+#[test]
+fn return_ticket_succeeds_with_creator() {
+    let board = MockBoard::with_tickets(vec![sample_ticket()]);
+    assert!(board.return_ticket("abc123", None).is_ok());
+}
+
+#[test]
+fn return_ticket_with_comment_succeeds() {
+    let board = MockBoard::with_tickets(vec![sample_ticket()]);
+    assert!(board.return_ticket("abc123", Some("need more context")).is_ok());
+}
+
+#[test]
+fn return_ticket_no_creator_errors() {
+    let board = MockBoard::with_tickets(vec![ticket_no_creator()]);
+    let err = board.return_ticket("no-creator", None).unwrap_err();
+    assert!(matches!(err, OrgaError::BackendError(_)));
+    assert!(err.to_string().contains("no known creator"));
+}
+
+#[test]
+fn comment_has_agent_name_field() {
+    let c = Comment {
+        id: "c1".into(),
+        at: Utc::now(),
+        who: sample_member(),
+        content: "hello".into(),
+        agent_name: Some("agent-1".into()),
+    };
+    let json = serde_json::to_string(&c).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["agent_name"], "agent-1");
+}
+
+#[test]
+fn comment_agent_name_null_for_humans() {
+    let c = Comment {
+        id: "c2".into(),
+        at: Utc::now(),
+        who: sample_member(),
+        content: "human comment".into(),
+        agent_name: None,
+    };
+    let json = serde_json::to_string(&c).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(parsed["agent_name"].is_null());
 }

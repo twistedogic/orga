@@ -34,6 +34,7 @@ pub struct Comment {
     pub at: DateTime<Utc>,
     pub who: Member,
     pub content: String,
+    pub agent_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +46,7 @@ pub struct Ticket {
     pub list_name: String,
     pub url: String,
     pub completed: bool,
+    pub creator: Option<Member>,
     pub assignees: Vec<Member>,
     pub checklists: Vec<Checklist>,
     pub comments: Vec<Comment>,
