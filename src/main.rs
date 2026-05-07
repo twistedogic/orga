@@ -3,6 +3,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 
+use orga::artifact::build_artifact_store;
 use orga::board::build_board;
 use orga::config::AppConfig;
 use orga::error::OrgaError;
@@ -43,6 +44,8 @@ enum Commands {
     Columns,
     #[command(about = "Show the configured agent's board identity")]
     Whoami,
+    #[command(subcommand, about = "Manage artifacts for a ticket")]
+    Artifact(ArtifactCommands),
 }
 
 #[derive(Subcommand)]
@@ -127,6 +130,33 @@ enum MemoryCommands {
     Get {
         #[arg(help = "Ticket ID")]
         ticket_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ArtifactCommands {
+    #[command(about = "Commit a named artifact for a ticket")]
+    Commit {
+        #[arg(help = "Ticket ID")]
+        ticket_id: String,
+        #[arg(help = "Artifact name (e.g. report.md)")]
+        name: String,
+        #[arg(help = "Artifact content (inline text)", conflicts_with = "file")]
+        content: Option<String>,
+        #[arg(long, help = "Path to file whose content will be committed", conflicts_with = "content")]
+        file: Option<String>,
+    },
+    #[command(about = "List all artifacts for a ticket")]
+    List {
+        #[arg(help = "Ticket ID")]
+        ticket_id: String,
+    },
+    #[command(about = "Get an artifact by name (scoped to current agent)")]
+    Get {
+        #[arg(help = "Ticket ID")]
+        ticket_id: String,
+        #[arg(help = "Artifact name")]
+        name: String,
     },
 }
 
@@ -286,6 +316,69 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
                     } else {
                         if let Some(e) = entry {
                             println!("{}", e.context);
+                        }
+                    }
+                }
+            }
+        }
+        Commands::Artifact(cmd) => {
+            let store = build_artifact_store(&config)?;
+            match cmd {
+                ArtifactCommands::Commit { ticket_id, name, content, file } => {
+                    let bytes: Vec<u8> = match (content, file) {
+                        (Some(text), None) => text.into_bytes(),
+                        (None, Some(path)) => {
+                            std::fs::read(&path).map_err(|e| {
+                                OrgaError::BackendError(format!("cannot read file '{path}': {e}"))
+                            })?
+                        }
+                        (None, None) => {
+                            return Err(OrgaError::BackendError(
+                                "either inline content or --file must be provided".into(),
+                            ))
+                        }
+                        (Some(_), Some(_)) => unreachable!("clap conflicts_with prevents this"),
+                    };
+                    let meta = store.commit(&ticket_id, &name, &bytes)?;
+                    if cli.json {
+                        println!(
+                            "{}",
+                            json!({
+                                "ok": true,
+                                "ticket_id": meta.ticket_id,
+                                "agent_name": meta.agent_name,
+                                "name": meta.name,
+                                "committed_at": meta.committed_at,
+                            })
+                        );
+                    } else {
+                        println!("artifact '{}' committed for {ticket_id}", meta.name);
+                    }
+                }
+                ArtifactCommands::List { ticket_id } => {
+                    let metas = store.list(&ticket_id)?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&metas).unwrap());
+                    } else {
+                        for m in &metas {
+                            println!("{}/{}\t{}", m.agent_name, m.name, m.committed_at.format("%Y-%m-%d %H:%M"));
+                        }
+                    }
+                }
+                ArtifactCommands::Get { ticket_id, name } => {
+                    let artifact = store.get(&ticket_id, &name)?;
+                    match artifact {
+                        Some(a) => {
+                            if cli.json {
+                                println!("{}", serde_json::to_string_pretty(&a).unwrap());
+                            } else {
+                                print!("{}", a.content);
+                            }
+                        }
+                        None => {
+                            return Err(OrgaError::NotFound(format!(
+                                "artifact '{name}' not found for ticket {ticket_id}"
+                            )))
                         }
                     }
                 }

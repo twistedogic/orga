@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+git2 = { version = "0.20", default-features = false, features = ["ssh", "https", "vendored-openssl"] }
 inquire = "0.7"
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
 rusqlite = { version = "0.31", features = ["bundled"] }

@@ -29,11 +29,29 @@ pub struct MemoryConfig {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ArtifactGitConfig {
+    pub path: String,
+    pub remote: Option<String>,
+    pub branch: Option<String>,
+    pub ssh_key: Option<String>,
+    pub ssh_passphrase: Option<String>,
+    pub http_username: Option<String>,
+    pub http_password: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ArtifactConfig {
+    pub backend: String,
+    pub git: Option<ArtifactGitConfig>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct AppConfig {
     pub agent: AgentConfig,
     pub board: BoardConfig,
     pub trello: Option<TrelloConfig>,
     pub memory: Option<MemoryConfig>,
+    pub artifact: Option<ArtifactConfig>,
 }
 
 impl AppConfig {
@@ -202,5 +220,39 @@ backend = "trello"
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.memory_db_path(), PathBuf::from("/tmp/test.db"));
+    }
+
+    #[test]
+    fn artifact_config_absent() {
+        let f = write_config(VALID_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.artifact.is_none());
+    }
+
+    #[test]
+    fn artifact_config_git_section() {
+        let content = format!(
+            "{VALID_CONFIG}\n[artifact]\nbackend = \"git\"\n\n[artifact.git]\npath = \"/tmp/artifacts\"\n"
+        );
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        let artifact = cfg.artifact.unwrap();
+        assert_eq!(artifact.backend, "git");
+        let git = artifact.git.unwrap();
+        assert_eq!(git.path, "/tmp/artifacts");
+        assert!(git.remote.is_none());
+        assert!(git.branch.is_none());
+    }
+
+    #[test]
+    fn artifact_config_git_with_remote_and_branch() {
+        let content = format!(
+            "{VALID_CONFIG}\n[artifact]\nbackend = \"git\"\n\n[artifact.git]\npath = \"/tmp/artifacts\"\nremote = \"origin\"\nbranch = \"main\"\n"
+        );
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        let git = cfg.artifact.unwrap().git.unwrap();
+        assert_eq!(git.remote.as_deref(), Some("origin"));
+        assert_eq!(git.branch.as_deref(), Some("main"));
     }
 }

@@ -2,6 +2,21 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactMeta {
+    pub ticket_id: String,
+    pub agent_name: String,
+    pub name: String,
+    pub committed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Artifact {
+    #[serde(flatten)]
+    pub meta: ArtifactMeta,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Column {
     pub id: String,
     pub name: String,
