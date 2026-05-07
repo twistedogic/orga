@@ -176,7 +176,10 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
                     } else if completed {
                         tickets.into_iter().filter(|t| t.completed).collect()
                     } else {
-                        tickets.into_iter().filter(|t| !t.completed).collect()
+                        tickets
+                            .into_iter()
+                            .filter(|t| !t.completed && !t.last_commenter_is_agent)
+                            .collect()
                     };
                     if cli.json {
                         println!("{}", serde_json::to_string_pretty(&tickets).unwrap());

@@ -62,6 +62,7 @@ impl Board for MockBoard {
                 url: "https://trello.com/c/sub-1".into(),
                 completed: false,
                 creator: None,
+                last_commenter_is_agent: false,
             },
             assignees: vec![],
             checklists: vec![],
@@ -116,6 +117,7 @@ fn sample_ticket() -> Ticket {
             list_name: "In Progress".into(),
             url: "https://trello.com/c/abc123".into(),
             completed: false,
+            last_commenter_is_agent: false,
             creator: Some(Member {
                 id: "u2".into(),
                 username: "bob".into(),
@@ -153,6 +155,7 @@ fn ticket_no_creator() -> Ticket {
             url: "https://trello.com/c/no-creator".into(),
             completed: false,
             creator: None,
+            last_commenter_is_agent: false,
         },
         assignees: vec![],
         checklists: vec![],
@@ -254,6 +257,7 @@ fn completed_ticket() -> Ticket {
             url: "https://trello.com/c/done1".into(),
             completed: true,
             creator: None,
+            last_commenter_is_agent: false,
         },
         assignees: vec![],
         checklists: vec![],
@@ -370,6 +374,15 @@ fn comment_has_agent_name_field() {
     let json = serde_json::to_string(&c).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["agent_name"], "agent-1");
+}
+
+#[test]
+fn ticket_summary_json_has_last_commenter_is_agent() {
+    let t = sample_ticket();
+    let json = serde_json::to_string(&t.summary).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(parsed.get("last_commenter_is_agent").is_some());
+    assert_eq!(parsed["last_commenter_is_agent"], false);
 }
 
 #[test]

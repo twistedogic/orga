@@ -47,6 +47,7 @@ pub struct TicketSummary {
     pub url: String,
     pub completed: bool,
     pub creator: Option<Member>,
+    pub last_commenter_is_agent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

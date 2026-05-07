@@ -92,10 +92,9 @@ impl TrelloBackend {
     }
 
     fn card_to_summary(&self, card: &TrelloCard, list_name: String) -> TicketSummary {
-        let creator: Option<Member> = card
-            .actions
-            .as_deref()
-            .unwrap_or_default()
+        let actions = card.actions.as_deref().unwrap_or_default();
+
+        let creator: Option<Member> = actions
             .iter()
             .find(|a| a.action_type == "createCard")
             .and_then(|a| a.member_creator.as_ref())
@@ -104,6 +103,15 @@ impl TrelloBackend {
                 username: m.username.clone(),
                 full_name: m.full_name.clone(),
             });
+
+        let last_commenter_is_agent = actions
+            .iter()
+            .filter(|a| a.action_type == "commentCard")
+            .max_by_key(|a| a.date.as_str())
+            .and_then(|a| a.data.as_ref())
+            .and_then(|d| d.text.as_deref())
+            .map(|t| parse_agent_tag(t).1.is_some())
+            .unwrap_or(false);
 
         TicketSummary {
             id: card.id.clone(),
@@ -114,6 +122,7 @@ impl TrelloBackend {
             url: card.url.clone(),
             completed: card.closed,
             creator,
+            last_commenter_is_agent,
         }
     }
 
@@ -174,6 +183,11 @@ impl TrelloBackend {
             })
             .collect();
 
+        let mut comments: Vec<Comment> = comments;
+        comments.sort_by_key(|c| c.at);
+
+        let last_commenter_is_agent = comments.last().map(|c| c.agent_name.is_some()).unwrap_or(false);
+
         let assignees: Vec<Member> = card
             .members
             .unwrap_or_default()
@@ -195,6 +209,7 @@ impl TrelloBackend {
                 url: card.url,
                 completed: card.closed,
                 creator,
+                last_commenter_is_agent,
             },
             assignees,
             checklists,
@@ -234,7 +249,7 @@ impl Board for TrelloBackend {
             .client
             .get(&url)
             .query(&self.auth_params())
-            .query(&[("filter", "all"), ("actions", "createCard")])
+            .query(&[("filter", "all"), ("actions", "commentCard,createCard")])
             .send()?;
         self.check_status(&resp)?;
         let cards: Vec<TrelloCard> = resp.json().map_err(|e| OrgaError::BackendError(e.to_string()))?;
@@ -491,5 +506,74 @@ mod tests {
         let (content, agent_name) = parse_agent_tag(text);
         assert_eq!(content, "just a normal comment");
         assert_eq!(agent_name, None);
+    }
+
+    fn make_card(actions: Vec<TrelloAction>) -> TrelloCard {
+        TrelloCard {
+            id: "card1".into(),
+            name: "Test".into(),
+            desc: None,
+            id_list: "list1".into(),
+            id_board: "board1".into(),
+            url: "https://example.com".into(),
+            closed: false,
+            checklists: None,
+            members: None,
+            actions: Some(actions),
+        }
+    }
+
+    fn make_comment_action(date: &str, text: &str) -> TrelloAction {
+        TrelloAction {
+            id: "a1".into(),
+            action_type: "commentCard".into(),
+            date: date.into(),
+            data: Some(TrelloActionData { text: Some(text.into()) }),
+            member_creator: Some(TrelloMember {
+                id: "m1".into(),
+                username: "user".into(),
+                full_name: "User".into(),
+            }),
+        }
+    }
+
+    fn make_backend() -> TrelloBackend {
+        TrelloBackend::new(
+            "key".into(),
+            "token".into(),
+            "board1".into(),
+            "member1".into(),
+            "agent-1".into(),
+        )
+    }
+
+    #[test]
+    fn card_to_summary_last_commenter_is_agent_true_when_tagged() {
+        let backend = make_backend();
+        let card = make_card(vec![
+            make_comment_action("2024-01-01T00:00:00Z", "human comment"),
+            make_comment_action("2024-01-02T00:00:00Z", "agent reply\n\n_[orga:agent-1]_"),
+        ]);
+        let summary = backend.card_to_summary(&card, "To Do".into());
+        assert!(summary.last_commenter_is_agent);
+    }
+
+    #[test]
+    fn card_to_summary_last_commenter_is_agent_false_when_not_tagged() {
+        let backend = make_backend();
+        let card = make_card(vec![
+            make_comment_action("2024-01-01T00:00:00Z", "agent reply\n\n_[orga:agent-1]_"),
+            make_comment_action("2024-01-02T00:00:00Z", "human reply"),
+        ]);
+        let summary = backend.card_to_summary(&card, "To Do".into());
+        assert!(!summary.last_commenter_is_agent);
+    }
+
+    #[test]
+    fn card_to_summary_last_commenter_is_agent_false_when_no_comments() {
+        let backend = make_backend();
+        let card = make_card(vec![]);
+        let summary = backend.card_to_summary(&card, "To Do".into());
+        assert!(!summary.last_commenter_is_agent);
     }
 }
