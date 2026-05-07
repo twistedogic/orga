@@ -10,6 +10,7 @@ orga
 .crush/
 .agents/
 skills-lock.json
+!skills/orga/
 
 # Added by cargo
 
