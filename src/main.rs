@@ -211,10 +211,29 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
                             .filter(|t| !t.completed && !t.last_commenter_is_agent)
                             .collect()
                     };
-                    if cli.json {
-                        println!("{}", serde_json::to_string_pretty(&tickets).unwrap());
+                    let empty_message = if tickets.is_empty() {
+                        Some(if all {
+                            "No tickets assigned to you."
+                        } else if completed {
+                            "No completed tickets."
+                        } else {
+                            "No tickets waiting on you."
+                        })
                     } else {
-                        print_ticket_summary_list(&tickets);
+                        None
+                    };
+                    if cli.json {
+                        let mut obj = serde_json::json!({ "tickets": tickets });
+                        if let Some(msg) = empty_message {
+                            obj["message"] = serde_json::json!(msg);
+                        }
+                        println!("{}", serde_json::to_string_pretty(&obj).unwrap());
+                    } else {
+                        if let Some(msg) = empty_message {
+                            println!("{}", msg);
+                        } else {
+                            print_ticket_summary_list(&tickets);
+                        }
                     }
                 }
                 TicketCommands::Show { id } => {
@@ -396,9 +415,6 @@ fn print_column_list(columns: &[Column]) {
 }
 
 fn print_ticket_summary_list(tickets: &[TicketSummary]) {
-    if tickets.is_empty() {
-        return;
-    }
     for t in tickets {
         println!("[{}] {} ({}) — {}", t.id, t.title, t.list_name, t.url);
     }
