@@ -7,6 +7,13 @@ description: Use when working tickets on an orga kanban board — checking assig
 
 `orga` is a kanban board CLI for agents. Use it to receive work, communicate with humans, and advance tickets through the board.
 
+## References
+
+- [Agile Manifesto](references/agile-manifesto.md) — the values and twelve principles that guide agile development
+- [Kanban Guide](references/kanban.md) — definition, three practices, flow metrics, and key terms
+- [openclaw HEARTBEAT.md](references/openclaw-heartbeat.md) — example session script for an openclaw agent using orga
+- [Zeroclaw SOP](references/zeroclaw-sop.md) — Standard Operating Procedures setup, event flow, and orga integration
+
 ## Session start (always do this first)
 
 ```bash
@@ -90,6 +97,24 @@ orga ticket move <id> "<column name>"
 - Never move a ticket without explicit human confirmation
 - Use `ticket return` when the ticket is misrouted or out of scope, not when done
 
+## Artifacts
+
+Artifacts are named blobs (files, reports, diffs, etc.) you produce while working a ticket. They are stored in a git-backed artifact store and scoped to the current agent.
+
+```bash
+orga artifact commit <ticket_id> <name> [content]   # store inline text as artifact
+orga artifact commit <ticket_id> <name> --file <path>  # store file contents
+orga artifact list  <ticket_id>                      # list all agents' artifacts for ticket
+orga artifact get   <ticket_id> <name>               # retrieve your artifact by name
+```
+
+- `commit` accepts either inline `content` or `--file <path>` (mutually exclusive).
+- `list` shows artifacts from **all** agents for the ticket (`agent/name\ttimestamp`).
+- `get` is scoped to the **current agent** — use it to retrieve artifacts you previously committed.
+- All commands support `--json`.
+
+Use artifacts to persist structured outputs (reports, diffs, data files) that are too large or too structured for ticket memory.
+
 ## Command reference
 
 ```bash
@@ -108,6 +133,9 @@ orga checklist check <ticket_id> <item_id>
 orga memory get <ticket_id>
 orga memory set <ticket_id> "<context>"
 orga columns --json
+orga artifact commit <ticket_id> <name> [content] [--file <path>]
+orga artifact list  <ticket_id>
+orga artifact get   <ticket_id> <name>
 ```
 
 ## Config
@@ -129,4 +157,16 @@ member_id = "..."
 
 [memory]          # optional
 path = "/path/to/memory.db"   # default: ~/.orga/memory.db
+
+[artifact]        # optional — required for orga artifact commands
+backend = "git"
+
+[artifact.git]
+path = "/path/to/artifact-repo"   # required: local git repo path
+remote = "origin"                 # optional: push after each commit
+branch = "main"                   # optional: branch to push to
+ssh_key = "/path/to/key"          # optional: SSH key for auth
+ssh_passphrase = "..."            # optional
+http_username = "..."             # optional: HTTP basic auth
+http_password = "..."             # optional
 ```
