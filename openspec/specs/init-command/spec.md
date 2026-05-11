@@ -58,11 +58,15 @@ After successful authentication, the wizard SHALL call `GET https://api.trello.c
 - **THEN** the wizard exits with a non-zero code and a message that no boards were found
 
 ### Requirement: Wizard writes a valid config file
-On completion the wizard SHALL write a valid TOML config to the resolved path and verify it loads without error.
+On completion the wizard SHALL write a valid TOML config to the resolved path and verify it loads without error. When the user completes the artifact store sub-flow, the config SHALL include `[artifact]` and `[artifact.git]` sections. When the user skips artifact setup, those sections SHALL be omitted.
 
-#### Scenario: Config written successfully
-- **WHEN** all prompts are completed and a board is selected
-- **THEN** a valid `config.toml` is written, the config directory is created if absent, and a success message including the written path is printed
+#### Scenario: Config written successfully without artifact setup
+- **WHEN** all Trello/board prompts are completed and the user skips artifact setup
+- **THEN** a valid `config.toml` is written containing `[agent]`, `[board]`, and `[trello]` sections; no artifact sections are present
+
+#### Scenario: Config written successfully with artifact setup
+- **WHEN** all prompts including artifact store are completed
+- **THEN** a valid `config.toml` is written containing `[agent]`, `[board]`, `[trello]`, `[artifact]`, and `[artifact.git]` sections
 
 #### Scenario: Written config self-validates
 - **WHEN** the file is written

@@ -1,8 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use chrono::Utc;
 use git2::{Cred, IndexAddOption, RemoteCallbacks, Repository, ResetType, Signature};
+
+const RETRY_DELAYS_MS: [u64; 3] = [100, 200, 400];
 
 use crate::artifact::ArtifactStore;
 use crate::config::expand_tilde;
@@ -63,56 +67,82 @@ impl GitArtifactStore {
 
 impl ArtifactStore for GitArtifactStore {
     fn commit(&self, ticket_id: &str, name: &str, content: &[u8]) -> Result<ArtifactMeta, OrgaError> {
-        let repo = self.open_repo()?;
         let dest = self.artifact_path(ticket_id, &self.agent_name, name);
-
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                OrgaError::BackendError(format!("cannot create artifact dir: {e}"))
-            })?;
-        }
-        fs::write(&dest, content).map_err(|e| {
-            OrgaError::BackendError(format!("cannot write artifact: {e}"))
-        })?;
-
-        let mut index = repo.index().map_err(|e| OrgaError::BackendError(e.to_string()))?;
-        index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
-            .map_err(|e| OrgaError::BackendError(format!("git add failed: {e}")))?;
-        index.write().map_err(|e| OrgaError::BackendError(e.to_string()))?;
-
         let now = Utc::now();
-        let sig = Signature::now(&self.agent_name, &format!("{}@orga", self.agent_name))
-            .map_err(|e| OrgaError::BackendError(e.to_string()))?;
-        let tree_oid = index.write_tree().map_err(|e| OrgaError::BackendError(e.to_string()))?;
-        let tree = repo.find_tree(tree_oid).map_err(|e| OrgaError::BackendError(e.to_string()))?;
-        let message = format!("artifact({ticket_id}/{}): {name}", self.agent_name);
 
-        let parents: Vec<git2::Commit> = match repo.head() {
-            Ok(head) => {
-                let oid = head.target().ok_or_else(|| OrgaError::BackendError("HEAD has no target".into()))?;
-                vec![repo.find_commit(oid).map_err(|e| OrgaError::BackendError(e.to_string()))?]
-            }
-            Err(_) => vec![],
-        };
-        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-
-        repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parent_refs)
-            .map_err(|e| OrgaError::BackendError(format!("git commit failed: {e}")))?;
-
-        if let Some(ref remote_name) = self.remote {
-            fetch_rebase_push(&repo, remote_name, &self.branch, &self.auth)
-                .map_err(|e| OrgaError::BackendError(format!("push failed: {e}")))?;
+        if self.remote.is_none() {
+            let repo = self.open_repo()?;
+            return commit_local(&repo, &dest, content, ticket_id, &self.agent_name, name, now);
         }
 
-        Ok(ArtifactMeta {
-            ticket_id: ticket_id.to_string(),
-            agent_name: self.agent_name.clone(),
-            name: name.to_string(),
-            committed_at: now,
-        })
+        let remote_name = self.remote.as_deref().unwrap();
+        let mut last_err = String::new();
+
+        for (attempt, &delay_ms) in RETRY_DELAYS_MS.iter().enumerate() {
+            let repo = self.open_repo()?;
+
+            if let Err(e) = fetch_rebase(&repo, remote_name, &self.branch, &self.auth) {
+                last_err = format!("sync failed: {e}");
+                if attempt < RETRY_DELAYS_MS.len() - 1 {
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+                continue;
+            }
+
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    OrgaError::BackendError(format!("cannot create artifact dir: {e}"))
+                })?;
+            }
+            fs::write(&dest, content).map_err(|e| {
+                OrgaError::BackendError(format!("cannot write artifact: {e}"))
+            })?;
+
+            match do_git_commit(&repo, &dest, ticket_id, &self.agent_name, name) {
+                Err(e) => {
+                    let _ = fs::remove_file(&dest);
+                    last_err = e.to_string();
+                    if attempt < RETRY_DELAYS_MS.len() - 1 {
+                        thread::sleep(Duration::from_millis(delay_ms));
+                    }
+                    continue;
+                }
+                Ok(()) => {}
+            }
+
+            match push(&repo, remote_name, &self.branch, &self.auth) {
+                Ok(()) => {
+                    return Ok(ArtifactMeta {
+                        ticket_id: ticket_id.to_string(),
+                        agent_name: self.agent_name.clone(),
+                        name: name.to_string(),
+                        committed_at: now,
+                    });
+                }
+                Err(e) => {
+                    last_err = format!("push failed: {e}");
+                    undo_commit(&repo);
+                    let _ = fs::remove_file(&dest);
+                    if attempt < RETRY_DELAYS_MS.len() - 1 {
+                        thread::sleep(Duration::from_millis(delay_ms));
+                    }
+                }
+            }
+        }
+
+        Err(OrgaError::BackendError(format!(
+            "commit failed after {} attempts: {}",
+            RETRY_DELAYS_MS.len(),
+            last_err
+        )))
     }
 
     fn get(&self, ticket_id: &str, name: &str) -> Result<Option<Artifact>, OrgaError> {
+        if let Some(ref remote_name) = self.remote {
+            let repo = self.open_repo()?;
+            sync_with_fallback(&repo, remote_name, &self.branch, &self.auth);
+        }
+
         let path = self.artifact_path(ticket_id, &self.agent_name, name);
         if !path.exists() {
             return Ok(None);
@@ -132,6 +162,11 @@ impl ArtifactStore for GitArtifactStore {
     }
 
     fn list(&self, ticket_id: &str) -> Result<Vec<ArtifactMeta>, OrgaError> {
+        if let Some(ref remote_name) = self.remote {
+            let repo = self.open_repo()?;
+            sync_with_fallback(&repo, remote_name, &self.branch, &self.auth);
+        }
+
         let ticket_dir = self.repo_path.join("artifacts").join(ticket_id);
         if !ticket_dir.exists() {
             return Ok(vec![]);
@@ -174,6 +209,80 @@ fn read_dir_sorted(path: &Path) -> Result<Vec<PathBuf>, OrgaError> {
     Ok(entries)
 }
 
+fn do_git_commit(repo: &Repository, dest: &Path, ticket_id: &str, agent_name: &str, name: &str) -> Result<(), OrgaError> {
+    let mut index = repo.index().map_err(|e| OrgaError::BackendError(e.to_string()))?;
+    index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+        .map_err(|e| OrgaError::BackendError(format!("git add failed: {e}")))?;
+    index.write().map_err(|e| OrgaError::BackendError(e.to_string()))?;
+
+    let sig = Signature::now(agent_name, &format!("{agent_name}@orga"))
+        .map_err(|e| OrgaError::BackendError(e.to_string()))?;
+    let tree_oid = index.write_tree().map_err(|e| OrgaError::BackendError(e.to_string()))?;
+    let tree = repo.find_tree(tree_oid).map_err(|e| OrgaError::BackendError(e.to_string()))?;
+    let message = format!("artifact({ticket_id}/{agent_name}): {name}");
+
+    let parents: Vec<git2::Commit> = match repo.head() {
+        Ok(head) => {
+            let oid = head.target().ok_or_else(|| OrgaError::BackendError("HEAD has no target".into()))?;
+            vec![repo.find_commit(oid).map_err(|e| OrgaError::BackendError(e.to_string()))?]
+        }
+        Err(_) => vec![],
+    };
+    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+
+    repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parent_refs)
+        .map_err(|e| OrgaError::BackendError(format!("git commit failed: {e}")))?;
+
+    let _ = dest;
+    Ok(())
+}
+
+fn commit_local(repo: &Repository, dest: &Path, content: &[u8], ticket_id: &str, agent_name: &str, name: &str, now: chrono::DateTime<Utc>) -> Result<ArtifactMeta, OrgaError> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            OrgaError::BackendError(format!("cannot create artifact dir: {e}"))
+        })?;
+    }
+    fs::write(dest, content).map_err(|e| {
+        OrgaError::BackendError(format!("cannot write artifact: {e}"))
+    })?;
+    do_git_commit(repo, dest, ticket_id, agent_name, name)?;
+    Ok(ArtifactMeta {
+        ticket_id: ticket_id.to_string(),
+        agent_name: agent_name.to_string(),
+        name: name.to_string(),
+        committed_at: now,
+    })
+}
+
+fn undo_commit(repo: &Repository) {
+    if let Ok(head) = repo.head() {
+        if let Some(head_oid) = head.target() {
+            if let Ok(head_commit) = repo.find_commit(head_oid) {
+                if head_commit.parent_count() > 0 {
+                    if let Ok(parent) = head_commit.parent(0) {
+                        let _ = repo.reset(parent.as_object(), ResetType::Hard, None);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn sync_with_fallback(repo: &Repository, remote_name: &str, branch: &str, auth: &GitAuth) {
+    for (attempt, &delay_ms) in RETRY_DELAYS_MS.iter().enumerate() {
+        match fetch_rebase(repo, remote_name, branch, auth) {
+            Ok(()) => return,
+            Err(_) => {
+                if attempt < RETRY_DELAYS_MS.len() - 1 {
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+            }
+        }
+    }
+    eprintln!("warning: artifact store sync failed, reading stale local data");
+}
+
 fn build_callbacks(auth: &GitAuth) -> RemoteCallbacks<'_> {
     let mut callbacks = RemoteCallbacks::new();
     let ssh_key = auth.ssh_key.clone();
@@ -207,7 +316,7 @@ fn build_callbacks(auth: &GitAuth) -> RemoteCallbacks<'_> {
     callbacks
 }
 
-fn fetch_rebase_push(repo: &Repository, remote_name: &str, branch: &str, auth: &GitAuth) -> Result<(), git2::Error> {
+fn fetch_rebase(repo: &Repository, remote_name: &str, branch: &str, auth: &GitAuth) -> Result<(), git2::Error> {
     let mut fetch_opts = git2::FetchOptions::new();
     fetch_opts.remote_callbacks(build_callbacks(auth));
 
@@ -280,13 +389,15 @@ fn fetch_rebase_push(repo: &Repository, remote_name: &str, branch: &str, auth: &
         }
     }
 
-    // Push
+    Ok(())
+}
+
+fn push(repo: &Repository, remote_name: &str, branch: &str, auth: &GitAuth) -> Result<(), git2::Error> {
     let mut push_opts = git2::PushOptions::new();
     push_opts.remote_callbacks(build_callbacks(auth));
     let mut push_remote = repo.find_remote(remote_name)?;
     let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
     push_remote.push(&[&refspec], Some(&mut push_opts))?;
-
     Ok(())
 }
 
@@ -397,5 +508,61 @@ mod tests {
         assert_eq!(artifact.content, "my notes");
         assert_eq!(artifact.meta.name, "notes.txt");
         assert_eq!(artifact.meta.ticket_id, "TICKET-1");
+    }
+
+    #[test]
+    fn list_no_remote_returns_local_data() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let store = make_store(tmp.path(), "agent-1");
+        store.commit("TICKET-1", "report.md", b"local").unwrap();
+        let results = store.list("TICKET-1").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "report.md");
+    }
+
+    #[test]
+    fn get_no_remote_returns_local_data() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let store = make_store(tmp.path(), "agent-1");
+        store.commit("TICKET-1", "notes.txt", b"local content").unwrap();
+        let artifact = store.get("TICKET-1", "notes.txt").unwrap().unwrap();
+        assert_eq!(artifact.content, "local content");
+    }
+
+    #[test]
+    fn commit_with_invalid_remote_cleans_up_and_errors() {
+        let tmp = TempDir::new().unwrap();
+        let repo = init_repo(tmp.path());
+        repo.remote("origin", "https://invalid.example.com/nonexistent.git").unwrap();
+        drop(repo);
+
+        let store = GitArtifactStore::new(
+            tmp.path().to_str().unwrap().to_string(),
+            "agent-1".to_string(),
+            Some("origin".to_string()),
+            "main".to_string(),
+            GitAuth::default(),
+        );
+
+        let head_before = {
+            let r = Repository::open(tmp.path()).unwrap();
+            r.head().unwrap().target().unwrap()
+        };
+
+        let result = store.commit("TICKET-1", "report.md", b"content");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("failed") || err.contains("error") || err.contains("commit"), "unexpected error: {err}");
+
+        let artifact_path = tmp.path().join("artifacts/TICKET-1/agent-1/report.md");
+        assert!(!artifact_path.exists(), "artifact file should be cleaned up after failed commit");
+
+        let head_after = {
+            let r = Repository::open(tmp.path()).unwrap();
+            r.head().unwrap().target().unwrap()
+        };
+        assert_eq!(head_before, head_after, "HEAD should be unchanged after failed commit");
     }
 }
