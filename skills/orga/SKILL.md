@@ -169,4 +169,12 @@ ssh_key = "/path/to/key"          # optional: SSH key for auth
 ssh_passphrase = "..."            # optional
 http_username = "..."             # optional: HTTP basic auth
 http_password = "..."             # optional
+
+[[workflow]]      # optional — repeat for each column
+column = "To Do"
+prompt = "Enter explore mode. Think deeply before acting."
+
+[[workflow]]
+column = "In Progress"
+prompt_file = "~/.orga/prompts/in-progress.md"   # path to a file containing the prompt
 ```

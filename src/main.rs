@@ -238,10 +238,18 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
                 }
                 TicketCommands::Show { id } => {
                     let ticket = board.get_ticket(&id)?;
+                    let workflow_prompt = config.workflow_prompt(&ticket.summary.list_name);
                     if cli.json {
-                        println!("{}", serde_json::to_string_pretty(&ticket).unwrap());
+                        let mut val = serde_json::to_value(&ticket).unwrap();
+                        if let Some(prompt) = workflow_prompt {
+                            val["workflow_prompt"] = serde_json::json!(prompt);
+                        }
+                        println!("{}", serde_json::to_string_pretty(&val).unwrap());
                     } else {
                         print_ticket_detail(&ticket);
+                        if let Some(prompt) = workflow_prompt {
+                            println!("\n## Workflow\n{}", prompt);
+                        }
                     }
                 }
                 TicketCommands::Comment { id, text } => {
