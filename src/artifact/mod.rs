@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use crate::config::AppConfig;
 use crate::error::OrgaError;
+use crate::logging::Logger;
 use crate::models::{Artifact, ArtifactMeta};
 
 pub mod git;
@@ -10,7 +13,7 @@ pub trait ArtifactStore {
     fn list(&self, ticket_id: &str) -> Result<Vec<ArtifactMeta>, OrgaError>;
 }
 
-pub fn build_artifact_store(config: &AppConfig) -> Result<Box<dyn ArtifactStore>, OrgaError> {
+pub fn build_artifact_store(config: &AppConfig, logger: Arc<Logger>) -> Result<Box<dyn ArtifactStore>, OrgaError> {
     let artifact_cfg = config.artifact.as_ref().ok_or_else(|| {
         OrgaError::ConfigError("[artifact] section missing from config".into())
     })?;
@@ -34,6 +37,7 @@ pub fn build_artifact_store(config: &AppConfig) -> Result<Box<dyn ArtifactStore>
                 git_cfg.remote.clone(),
                 git_cfg.branch.clone().unwrap_or_else(|| "main".into()),
                 auth,
+                logger,
             );
             Ok(Box::new(store))
         }

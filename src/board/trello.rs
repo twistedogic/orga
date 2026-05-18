@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::DateTime;
 use reqwest::blocking::Client;
 use reqwest::StatusCode;
@@ -5,6 +7,7 @@ use serde::Deserialize;
 
 use crate::board::Board;
 use crate::error::OrgaError;
+use crate::logging::Logger;
 use crate::models::{Checklist, ChecklistItem, Column, Comment, Member, Ticket, TicketSummary};
 
 pub struct TrelloBackend {
@@ -14,10 +17,11 @@ pub struct TrelloBackend {
     member_id: String,
     agent_name: String,
     client: Client,
+    logger: Arc<Logger>,
 }
 
 impl TrelloBackend {
-    pub fn new(api_key: String, token: String, board_id: String, member_id: String, agent_name: String) -> Self {
+    pub fn new(api_key: String, token: String, board_id: String, member_id: String, agent_name: String, logger: Arc<Logger>) -> Self {
         Self {
             api_key,
             token,
@@ -25,6 +29,7 @@ impl TrelloBackend {
             member_id,
             agent_name,
             client: Client::new(),
+            logger,
         }
     }
 
@@ -38,35 +43,47 @@ impl TrelloBackend {
             .get(url)
             .query(&self.auth_params())
             .send()?;
-        self.check_status(&resp)?;
-        Ok(resp.json().map_err(|e| OrgaError::BackendError(e.to_string()))?)
+        let body = self.handle_response(resp)?;
+        serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))
     }
 
     fn post_form(&self, url: &str, params: &[(&str, &str)]) -> Result<serde_json::Value, OrgaError> {
         let mut all: Vec<(&str, &str)> = self.auth_params().to_vec();
         all.extend_from_slice(params);
         let resp = self.client.post(url).query(&all).send()?;
-        self.check_status(&resp)?;
-        Ok(resp.json().map_err(|e| OrgaError::BackendError(e.to_string()))?)
+        let body = self.handle_response(resp)?;
+        serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))
     }
 
     fn put_form(&self, url: &str, params: &[(&str, &str)]) -> Result<serde_json::Value, OrgaError> {
         let mut all: Vec<(&str, &str)> = self.auth_params().to_vec();
         all.extend_from_slice(params);
         let resp = self.client.put(url).query(&all).send()?;
-        self.check_status(&resp)?;
-        Ok(resp.json().map_err(|e| OrgaError::BackendError(e.to_string()))?)
+        let body = self.handle_response(resp)?;
+        serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))
     }
 
-    fn check_status(&self, resp: &reqwest::blocking::Response) -> Result<(), OrgaError> {
-        match resp.status() {
-            StatusCode::TOO_MANY_REQUESTS => Err(OrgaError::RateLimited),
-            StatusCode::UNAUTHORIZED => Err(OrgaError::Unauthorized("invalid Trello credentials".into())),
-            StatusCode::NOT_FOUND => Err(OrgaError::NotFound("resource not found".into())),
-            s if s.is_client_error() || s.is_server_error() => {
-                Err(OrgaError::BackendError(format!("Trello returned HTTP {s}")))
+    fn handle_response(&self, resp: reqwest::blocking::Response) -> Result<String, OrgaError> {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        match status {
+            StatusCode::TOO_MANY_REQUESTS => {
+                self.logger.error(&format!("Trello HTTP {status}\nBody: {body}"));
+                Err(OrgaError::RateLimited)
             }
-            _ => Ok(()),
+            StatusCode::UNAUTHORIZED => {
+                self.logger.error(&format!("Trello HTTP {status}\nBody: {body}"));
+                Err(OrgaError::Unauthorized("invalid Trello credentials".into()))
+            }
+            StatusCode::NOT_FOUND => {
+                self.logger.error(&format!("Trello HTTP {status}\nBody: {body}"));
+                Err(OrgaError::NotFound("resource not found".into()))
+            }
+            s if s.is_client_error() || s.is_server_error() => {
+                self.logger.error(&format!("Trello HTTP {status}\nBody: {body}"));
+                Err(OrgaError::BackendError(format!("Trello returned HTTP {status}")))
+            }
+            _ => Ok(body),
         }
     }
 
@@ -251,8 +268,8 @@ impl Board for TrelloBackend {
             .query(&self.auth_params())
             .query(&[("filter", "all"), ("actions", "commentCard,createCard")])
             .send()?;
-        self.check_status(&resp)?;
-        let cards: Vec<TrelloCard> = resp.json().map_err(|e| OrgaError::BackendError(e.to_string()))?;
+        let body = self.handle_response(resp)?;
+        let cards: Vec<TrelloCard> = serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))?;
 
         let cards: Vec<TrelloCard> = cards
             .into_iter()
@@ -280,8 +297,8 @@ impl Board for TrelloBackend {
                 ("actions", "commentCard,createCard"),
             ])
             .send()?;
-        self.check_status(&resp)?;
-        let card: TrelloCard = resp.json().map_err(|e| OrgaError::BackendError(e.to_string()))?;
+        let body = self.handle_response(resp)?;
+        let card: TrelloCard = serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))?;
         let list_name = self.get_list_name(&card.id_list)?;
         self.card_to_ticket(card, list_name)
     }
@@ -374,8 +391,8 @@ impl Board for TrelloBackend {
             .query(&self.auth_params())
             .query(&[("fields", "id,username,fullName")])
             .send()?;
-        self.check_status(&resp)?;
-        let m: TrelloMember = resp.json().map_err(|e| OrgaError::BackendError(e.to_string()))?;
+        let body = self.handle_response(resp)?;
+        let m: TrelloMember = serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))?;
         Ok(Member {
             id: m.id,
             username: m.username,
@@ -538,12 +555,15 @@ mod tests {
     }
 
     fn make_backend() -> TrelloBackend {
+        use std::path::Path;
+        let logger = Arc::new(Logger::new(Path::new("/dev/null"), false));
         TrelloBackend::new(
             "key".into(),
             "token".into(),
             "board1".into(),
             "member1".into(),
             "agent-1".into(),
+            logger,
         )
     }
 

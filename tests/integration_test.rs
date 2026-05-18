@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 
 use orga::artifact::ArtifactStore;
 use orga::artifact::git::{GitArtifactStore, GitAuth};
 use orga::board::Board;
 use orga::error::OrgaError;
+use orga::logging::Logger;
 use orga::models::{Checklist, Column, Comment, Member, Ticket, TicketSummary};
 
 struct MockBoard {
@@ -421,12 +424,14 @@ fn init_git_repo(dir: &Path) {
 }
 
 fn make_git_store(dir: &Path, agent: &str) -> GitArtifactStore {
+    let logger = Arc::new(Logger::new(Path::new("/dev/null"), false));
     GitArtifactStore::new(
         dir.to_str().unwrap().to_string(),
         agent.to_string(),
         None,
         "main".to_string(),
         GitAuth::default(),
+        logger,
     )
 }
 

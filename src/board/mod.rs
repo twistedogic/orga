@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use crate::config::AppConfig;
 use crate::error::OrgaError;
+use crate::logging::Logger;
 use crate::models::{Column, Member, Ticket, TicketSummary};
 
 pub mod trello;
@@ -18,7 +21,7 @@ pub trait Board {
     fn return_ticket(&self, id: &str, comment: Option<&str>) -> Result<(), OrgaError>;
 }
 
-pub fn build_board(config: &AppConfig) -> Result<Box<dyn Board>, OrgaError> {
+pub fn build_board(config: &AppConfig, logger: Arc<Logger>) -> Result<Box<dyn Board>, OrgaError> {
     match config.board.backend.as_str() {
         "trello" => {
             let trello_cfg = config.trello.as_ref().ok_or_else(|| {
@@ -30,6 +33,7 @@ pub fn build_board(config: &AppConfig) -> Result<Box<dyn Board>, OrgaError> {
                 config.board.id.clone(),
                 trello_cfg.member_id.clone(),
                 config.agent.name.clone(),
+                logger,
             );
             Ok(Box::new(backend))
         }

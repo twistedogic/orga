@@ -4,6 +4,7 @@ use std::{env, fs};
 use serde::Deserialize;
 
 use crate::error::OrgaError;
+use crate::logging::Logger;
 
 #[derive(Debug, Deserialize)]
 pub struct AgentConfig {
@@ -47,6 +48,12 @@ pub struct WorkflowEntry {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct LoggingConfig {
+    pub file: Option<String>,
+    pub debug: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ArtifactConfig {
     pub backend: String,
     pub git: Option<ArtifactGitConfig>,
@@ -59,6 +66,7 @@ pub struct AppConfig {
     pub trello: Option<TrelloConfig>,
     pub memory: Option<MemoryConfig>,
     pub artifact: Option<ArtifactConfig>,
+    pub logging: Option<LoggingConfig>,
     #[serde(default)]
     pub workflow: Vec<WorkflowEntry>,
 }
@@ -146,6 +154,20 @@ impl AppConfig {
             }
         }
         Ok(())
+    }
+
+    pub fn logger(&self) -> Logger {
+        let path = self
+            .logging
+            .as_ref()
+            .and_then(|l| l.file.as_deref())
+            .unwrap_or("~/.orga/orga.log");
+        let debug = self
+            .logging
+            .as_ref()
+            .and_then(|l| l.debug)
+            .unwrap_or(false);
+        Logger::new(&expand_tilde(path), debug)
     }
 
     pub fn workflow_prompt(&self, list_name: &str) -> Option<&str> {
@@ -386,5 +408,30 @@ backend = "trello"
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.workflow_prompt("In Progress"), None);
+    }
+
+    #[test]
+    fn logging_section_absent_uses_defaults() {
+        let f = write_config(VALID_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.logging.is_none());
+        let logger = cfg.logger();
+        drop(logger);
+    }
+
+    #[test]
+    fn logging_section_with_custom_file() {
+        let content = format!("{VALID_CONFIG}\n[logging]\nfile = \"/tmp/orga-test.log\"\n");
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.logging.as_ref().unwrap().file.as_deref(), Some("/tmp/orga-test.log"));
+    }
+
+    #[test]
+    fn logging_debug_flag_propagated() {
+        let content = format!("{VALID_CONFIG}\n[logging]\ndebug = true\n");
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.logging.as_ref().unwrap().debug, Some(true));
     }
 }

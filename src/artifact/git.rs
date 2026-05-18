@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -11,6 +12,7 @@ const RETRY_DELAYS_MS: [u64; 3] = [100, 200, 400];
 use crate::artifact::ArtifactStore;
 use crate::config::expand_tilde;
 use crate::error::OrgaError;
+use crate::logging::Logger;
 use crate::models::{Artifact, ArtifactMeta};
 
 #[derive(Clone, Default)]
@@ -27,6 +29,7 @@ pub struct GitArtifactStore {
     remote: Option<String>,
     branch: String,
     auth: GitAuth,
+    logger: Arc<Logger>,
 }
 
 impl GitArtifactStore {
@@ -36,6 +39,7 @@ impl GitArtifactStore {
         remote: Option<String>,
         branch: String,
         auth: GitAuth,
+        logger: Arc<Logger>,
     ) -> Self {
         Self {
             repo_path: expand_tilde(&path),
@@ -43,6 +47,7 @@ impl GitArtifactStore {
             remote,
             branch,
             auth,
+            logger,
         }
     }
 
@@ -140,7 +145,7 @@ impl ArtifactStore for GitArtifactStore {
     fn get(&self, ticket_id: &str, name: &str) -> Result<Option<Artifact>, OrgaError> {
         if let Some(ref remote_name) = self.remote {
             let repo = self.open_repo()?;
-            sync_with_fallback(&repo, remote_name, &self.branch, &self.auth);
+            sync_with_fallback(&repo, remote_name, &self.branch, &self.auth, &self.logger);
         }
 
         let path = self.artifact_path(ticket_id, &self.agent_name, name);
@@ -164,7 +169,7 @@ impl ArtifactStore for GitArtifactStore {
     fn list(&self, ticket_id: &str) -> Result<Vec<ArtifactMeta>, OrgaError> {
         if let Some(ref remote_name) = self.remote {
             let repo = self.open_repo()?;
-            sync_with_fallback(&repo, remote_name, &self.branch, &self.auth);
+            sync_with_fallback(&repo, remote_name, &self.branch, &self.auth, &self.logger);
         }
 
         let ticket_dir = self.repo_path.join("artifacts").join(ticket_id);
@@ -269,7 +274,7 @@ fn undo_commit(repo: &Repository) {
     }
 }
 
-fn sync_with_fallback(repo: &Repository, remote_name: &str, branch: &str, auth: &GitAuth) {
+fn sync_with_fallback(repo: &Repository, remote_name: &str, branch: &str, auth: &GitAuth, logger: &Logger) {
     for (attempt, &delay_ms) in RETRY_DELAYS_MS.iter().enumerate() {
         match fetch_rebase(repo, remote_name, branch, auth) {
             Ok(()) => return,
@@ -280,7 +285,7 @@ fn sync_with_fallback(repo: &Repository, remote_name: &str, branch: &str, auth: 
             }
         }
     }
-    eprintln!("warning: artifact store sync failed, reading stale local data");
+    logger.warn("artifact store sync failed, reading stale local data");
 }
 
 fn build_callbacks(auth: &GitAuth) -> RemoteCallbacks<'_> {
@@ -421,12 +426,14 @@ mod tests {
     }
 
     fn make_store(dir: &Path, agent: &str) -> GitArtifactStore {
+        let logger = Arc::new(Logger::new(Path::new("/dev/null"), false));
         GitArtifactStore::new(
             dir.to_str().unwrap().to_string(),
             agent.to_string(),
             None,
             "main".to_string(),
             GitAuth::default(),
+            logger,
         )
     }
 
@@ -538,12 +545,14 @@ mod tests {
         repo.remote("origin", "https://invalid.example.com/nonexistent.git").unwrap();
         drop(repo);
 
+        let logger = Arc::new(Logger::new(Path::new("/dev/null"), false));
         let store = GitArtifactStore::new(
             tmp.path().to_str().unwrap().to_string(),
             "agent-1".to_string(),
             Some("origin".to_string()),
             "main".to_string(),
             GitAuth::default(),
+            logger,
         );
 
         let head_before = {

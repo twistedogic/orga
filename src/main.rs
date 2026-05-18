@@ -1,4 +1,5 @@
 use std::process;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use serde_json::json;
@@ -8,6 +9,7 @@ use orga::board::build_board;
 use orga::config::AppConfig;
 use orga::error::OrgaError;
 use orga::init::run_init;
+use orga::logging::Logger;
 use orga::memory::MemoryStore;
 use orga::models::{Column, Ticket, TicketSummary};
 
@@ -162,8 +164,9 @@ enum ArtifactCommands {
 
 fn main() {
     let cli = Cli::parse();
+    let default_logger = Logger::new(&orga::config::expand_tilde("~/.orga/orga.log"), false);
     if let Err(e) = run(cli) {
-        exit_error(&e.to_string());
+        exit_error(&e.to_string(), &default_logger);
     }
 }
 
@@ -175,11 +178,12 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
     }
 
     let config = AppConfig::load(&config_path)?;
+    let logger = Arc::new(config.logger());
 
     match cli.command {
         Commands::Init => unreachable!(),
         Commands::Columns => {
-            let board = build_board(&config)?;
+            let board = build_board(&config, Arc::clone(&logger))?;
             let columns = board.list_columns()?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&columns).unwrap());
@@ -188,7 +192,7 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
             }
         }
         Commands::Whoami => {
-            let board = build_board(&config)?;
+            let board = build_board(&config, Arc::clone(&logger))?;
             let member = board.whoami()?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&member).unwrap());
@@ -197,7 +201,7 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
             }
         }
         Commands::Ticket(cmd) => {
-            let board = build_board(&config)?;
+            let board = build_board(&config, Arc::clone(&logger))?;
             match cmd {
                 TicketCommands::List { completed, all } => {
                     let tickets = board.list_assigned()?;
@@ -301,7 +305,7 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
             }
         }
         Commands::Checklist(cmd) => {
-            let board = build_board(&config)?;
+            let board = build_board(&config, Arc::clone(&logger))?;
             match cmd {
                 ChecklistCommands::Add { ticket_id, text } => {
                     let item_id = board.add_checklist_item(&ticket_id, &text)?;
@@ -349,7 +353,7 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
             }
         }
         Commands::Artifact(cmd) => {
-            let store = build_artifact_store(&config)?;
+            let store = build_artifact_store(&config, Arc::clone(&logger))?;
             match cmd {
                 ArtifactCommands::Commit { ticket_id, name, content, file } => {
                     let bytes: Vec<u8> = match (content, file) {
@@ -463,7 +467,8 @@ fn print_ticket_detail(t: &Ticket) {
     }
 }
 
-fn exit_error(msg: &str) -> ! {
+fn exit_error(msg: &str, logger: &Logger) -> ! {
+    logger.error(msg);
     eprintln!("error: {msg}");
     process::exit(1);
 }
