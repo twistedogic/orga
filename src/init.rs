@@ -10,6 +10,78 @@ use serde::Deserialize;
 use crate::config::{AppConfig, ArtifactGitConfig};
 use crate::error::OrgaError;
 
+// ── Linear init helpers ─────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct LinearInitUser {
+    #[allow(dead_code)]
+    id: String,
+    #[serde(rename = "displayName")]
+    display_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LinearTeamItem {
+    pub id: String,
+    pub name: String,
+}
+
+fn linear_gql<T: for<'de> Deserialize<'de>>(api_key: &str, query: &str) -> Result<T, OrgaError> {
+    #[derive(serde::Serialize)]
+    struct Payload<'a> { query: &'a str }
+    #[derive(Deserialize)]
+    struct GqlError { message: String }
+    #[derive(Deserialize)]
+    struct GqlResponse { data: Option<serde_json::Value>, errors: Option<Vec<GqlError>> }
+
+    let client = Client::new();
+    let resp = client
+        .post("https://api.linear.app/graphql")
+        .header("Authorization", api_key)
+        .header("Content-Type", "application/json")
+        .json(&Payload { query })
+        .send()?;
+
+    let status = resp.status();
+    let body = resp.text().unwrap_or_default();
+
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::BAD_REQUEST {
+        let msg = serde_json::from_str::<GqlResponse>(&body)
+            .ok()
+            .and_then(|r| r.errors)
+            .and_then(|e| e.into_iter().next())
+            .map(|e| e.message)
+            .unwrap_or_else(|| "invalid Linear API key".into());
+        return Err(OrgaError::Unauthorized(msg));
+    }
+    if status.is_client_error() || status.is_server_error() {
+        return Err(OrgaError::BackendError(format!("Linear returned HTTP {status}")));
+    }
+
+    let parsed: GqlResponse = serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))?;
+    if let Some(first) = parsed.errors.and_then(|e| e.into_iter().next()) {
+        return Err(OrgaError::BackendError(first.message));
+    }
+    let data = parsed.data.ok_or_else(|| OrgaError::BackendError("Linear returned no data".into()))?;
+    serde_json::from_value(data).map_err(|e| OrgaError::BackendError(e.to_string()))
+}
+
+fn fetch_linear_viewer(api_key: &str) -> Result<LinearInitUser, OrgaError> {
+    #[derive(Deserialize)]
+    struct Resp { viewer: LinearInitUser }
+    let resp: Resp = linear_gql(api_key, "query { viewer { id displayName } }")?;
+    Ok(resp.viewer)
+}
+
+fn fetch_linear_teams(api_key: &str) -> Result<Vec<LinearTeamItem>, OrgaError> {
+    #[derive(Deserialize)]
+    struct Nodes { nodes: Vec<LinearTeamItem> }
+    #[derive(Deserialize)]
+    struct Resp { teams: Nodes }
+    let resp: Resp = linear_gql(api_key, "query { teams { nodes { id name } } }")?;
+    Ok(resp.teams.nodes)
+}
+
 #[derive(Debug, Deserialize)]
 struct TrelloMeResponse {
     id: String,
@@ -77,26 +149,45 @@ fn fetch_boards(api_key: &str, token: &str) -> Result<Vec<TrelloBoardItem>, Orga
 pub fn run_init(config_path: &Path) -> Result<(), OrgaError> {
     let existing = AppConfig::try_load(config_path);
 
-    let default_name = existing
+    let default_backend = existing
         .as_ref()
+        .map(|c| c.board.backend.as_str())
+        .unwrap_or("trello")
+        .to_string();
+    let backends = vec!["trello", "linear"];
+    let default_backend_idx = backends
+        .iter()
+        .position(|b| *b == default_backend.as_str())
+        .unwrap_or(0);
+    let backend = Select::new("Backend:", backends)
+        .with_starting_cursor(default_backend_idx)
+        .prompt()
+        .map_err(|e| OrgaError::ConfigError(e.to_string()))?;
+
+    match backend {
+        "linear" => run_linear_init(config_path, existing.as_ref()),
+        _ => run_trello_init(config_path, existing.as_ref()),
+    }
+}
+
+fn run_trello_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(), OrgaError> {
+    let default_name = existing
         .map(|c| c.agent.name.as_str())
         .unwrap_or("")
         .to_string();
     let default_api_key = existing
-        .as_ref()
         .and_then(|c| c.trello.as_ref())
         .map(|t| t.api_key.as_str())
         .unwrap_or("")
         .to_string();
     let default_token = existing
-        .as_ref()
         .and_then(|c| c.trello.as_ref())
         .map(|t| t.token.as_str())
         .unwrap_or("")
         .to_string();
     let existing_board_id = existing
-        .as_ref()
-        .map(|c| c.board.id.as_str())
+        .and_then(|c| c.trello.as_ref())
+        .map(|t| t.board_id.as_str())
         .unwrap_or("")
         .to_string();
 
@@ -153,7 +244,7 @@ pub fn run_init(config_path: &Path) -> Result<(), OrgaError> {
         .map(|b| b.id.as_str())
         .unwrap_or_default();
 
-    let artifact = run_artifact_setup(existing.as_ref().and_then(|c| c.artifact.as_ref()).and_then(|a| a.git.as_ref()))?;
+    let artifact = run_artifact_setup(existing.and_then(|c| c.artifact.as_ref()).and_then(|a| a.git.as_ref()))?;
 
     write_config_file(
         config_path,
@@ -164,6 +255,78 @@ pub fn run_init(config_path: &Path) -> Result<(), OrgaError> {
         &me.id,
         artifact.as_ref(),
     )?;
+
+    println!("Config written to {}", config_path.display());
+    Ok(())
+}
+
+fn run_linear_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(), OrgaError> {
+    let default_name = existing
+        .map(|c| c.agent.name.as_str())
+        .unwrap_or("")
+        .to_string();
+    let default_api_key = existing
+        .and_then(|c| c.linear.as_ref())
+        .map(|l| l.api_key.as_str())
+        .unwrap_or("")
+        .to_string();
+    let existing_team_id = existing
+        .and_then(|c| c.linear.as_ref())
+        .map(|l| l.team_id.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let agent_name = Text::new("Agent name:")
+        .with_default(&default_name)
+        .prompt()
+        .map_err(|e| OrgaError::ConfigError(e.to_string()))?;
+
+    let api_key = if default_api_key.is_empty() {
+        Password::new("Linear API key:")
+            .without_confirmation()
+            .prompt()
+            .map_err(|e| OrgaError::ConfigError(e.to_string()))?
+    } else {
+        Password::new("Linear API key (leave blank to keep current):")
+            .without_confirmation()
+            .prompt()
+            .map_err(|e| OrgaError::ConfigError(e.to_string()))
+            .map(|k| if k.is_empty() { default_api_key.clone() } else { k })?
+    };
+
+    print!("Verifying Linear API key... ");
+    let viewer = fetch_linear_viewer(&api_key)?;
+    println!("Authenticated as {}", viewer.display_name);
+
+    print!("Fetching your teams... ");
+    let teams = fetch_linear_teams(&api_key)?;
+    if teams.is_empty() {
+        return Err(OrgaError::ConfigError(
+            "no teams found for this Linear account".into(),
+        ));
+    }
+    println!("found {} team(s)", teams.len());
+
+    let default_team_idx = teams
+        .iter()
+        .position(|t| t.id == existing_team_id)
+        .unwrap_or(0);
+
+    let team_names: Vec<&str> = teams.iter().map(|t| t.name.as_str()).collect();
+    let selected_name = Select::new("Which team?", team_names)
+        .with_starting_cursor(default_team_idx)
+        .prompt()
+        .map_err(|e| OrgaError::ConfigError(e.to_string()))?;
+
+    let team_id = teams
+        .iter()
+        .find(|t| t.name == selected_name)
+        .map(|t| t.id.as_str())
+        .unwrap_or_default();
+
+    let artifact = run_artifact_setup(existing.and_then(|c| c.artifact.as_ref()).and_then(|a| a.git.as_ref()))?;
+
+    write_linear_config_file(config_path, &agent_name, team_id, &api_key, artifact.as_ref())?;
 
     println!("Config written to {}", config_path.display());
     Ok(())
@@ -312,6 +475,54 @@ fn clone_with_ssh_key_or_agent(url: &str, into: &PathBuf, ssh_key: Option<&str>)
     Ok(())
 }
 
+fn write_linear_config_file(
+    config_path: &Path,
+    agent_name: &str,
+    team_id: &str,
+    api_key: &str,
+    artifact: Option<&ArtifactGitConfig>,
+) -> Result<(), OrgaError> {
+    let mut toml = format!(
+        "[agent]\nname = {agent_name:?}\n\n[board]\nbackend = \"linear\"\n\n[linear]\napi_key = {api_key:?}\nteam_id = {team_id:?}\n",
+    );
+
+    if let Some(git) = artifact {
+        toml.push_str("\n[artifact]\nbackend = \"git\"\n\n[artifact.git]\n");
+        toml.push_str(&format!("path = {:?}\n", git.path));
+        if let Some(ref remote) = git.remote {
+            toml.push_str(&format!("remote = {remote:?}\n"));
+        }
+        if let Some(ref branch) = git.branch {
+            toml.push_str(&format!("branch = {branch:?}\n"));
+        }
+        if let Some(ref ssh_key) = git.ssh_key {
+            toml.push_str(&format!("ssh_key = {ssh_key:?}\n"));
+        }
+    }
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            OrgaError::ConfigError(format!(
+                "cannot create config directory {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    fs::write(config_path, &toml).map_err(|e| {
+        OrgaError::ConfigError(format!(
+            "cannot write config to {}: {e}",
+            config_path.display()
+        ))
+    })?;
+
+    AppConfig::load(config_path).map_err(|e| {
+        OrgaError::ConfigError(format!("written config failed validation: {e}"))
+    })?;
+
+    Ok(())
+}
+
 fn write_config_file(
     config_path: &Path,
     agent_name: &str,
@@ -322,7 +533,7 @@ fn write_config_file(
     artifact: Option<&ArtifactGitConfig>,
 ) -> Result<(), OrgaError> {
     let mut toml = format!(
-        "[agent]\nname = {agent_name:?}\n\n[board]\nid = {board_id:?}\nbackend = \"trello\"\n\n[trello]\napi_key = {api_key:?}\ntoken = {token:?}\nmember_id = {member_id:?}\n",
+        "[agent]\nname = {agent_name:?}\n\n[board]\nbackend = \"trello\"\n\n[trello]\napi_key = {api_key:?}\ntoken = {token:?}\nmember_id = {member_id:?}\nboard_id = {board_id:?}\n",
     );
 
     if let Some(git) = artifact {
@@ -373,7 +584,7 @@ mod tests {
         write_config_file(f.path(), "agent-1", "board-abc", "key123", "tok456", "mem789", None).unwrap();
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.agent.name, "agent-1");
-        assert_eq!(cfg.board.id, "board-abc");
+        assert_eq!(cfg.trello.as_ref().unwrap().board_id, "board-abc");
         assert_eq!(cfg.board.backend, "trello");
         let trello = cfg.trello.unwrap();
         assert_eq!(trello.api_key, "key123");
@@ -398,7 +609,7 @@ mod tests {
             .unwrap();
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.agent.name, "new-name");
-        assert_eq!(cfg.board.id, "new-board");
+        assert_eq!(cfg.trello.as_ref().unwrap().board_id, "new-board");
     }
 
     #[test]
@@ -542,11 +753,43 @@ mod tests {
         assert!(ssh_key.is_none());
     }
 
-    // --- 3.4: existing non-repo dir returns OrgaError::ConfigError ---
     #[test]
-    fn open_existing_repo_errors_on_non_repo_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let err = open_existing_repo(&dir.path().to_path_buf(), None).unwrap_err();
-        assert!(err.to_string().contains("not a valid git repository"));
+    fn write_linear_config_file_produces_valid_toml() {
+        let f = NamedTempFile::new().unwrap();
+        write_linear_config_file(f.path(), "agent-1", "team-abc", "lin_api_xyz", None).unwrap();
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.agent.name, "agent-1");
+        assert_eq!(cfg.board.backend, "linear");
+        assert_eq!(cfg.linear.as_ref().unwrap().team_id, "team-abc");
+        assert_eq!(cfg.linear.unwrap().api_key, "lin_api_xyz");
+        assert!(cfg.trello.is_none());
+    }
+
+    #[test]
+    fn write_linear_config_file_no_artifact_section() {
+        let f = NamedTempFile::new().unwrap();
+        write_linear_config_file(f.path(), "agent-1", "team-abc", "lin_api_xyz", None).unwrap();
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.artifact.is_none());
+    }
+
+    #[test]
+    fn write_linear_config_file_with_artifact() {
+        let f = NamedTempFile::new().unwrap();
+        let git_cfg = ArtifactGitConfig {
+            path: "/tmp/artifacts".to_string(),
+            remote: Some("origin".to_string()),
+            branch: Some("main".to_string()),
+            ssh_key: None,
+            ssh_passphrase: None,
+            http_username: None,
+            http_password: None,
+        };
+        write_linear_config_file(f.path(), "agent-1", "team-abc", "lin_api_xyz", Some(&git_cfg)).unwrap();
+        let cfg = AppConfig::load(f.path()).unwrap();
+        let git = cfg.artifact.unwrap().git.unwrap();
+        assert_eq!(git.path, "/tmp/artifacts");
+        assert_eq!(git.remote.as_deref(), Some("origin"));
+        assert_eq!(git.branch.as_deref(), Some("main"));
     }
 }

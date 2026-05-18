@@ -6,6 +6,7 @@ use crate::logging::Logger;
 use crate::models::{Column, Member, Ticket, TicketSummary};
 
 pub mod trello;
+pub mod linear;
 
 pub trait Board {
     fn list_assigned(&self) -> Result<Vec<TicketSummary>, OrgaError>;
@@ -30,11 +31,23 @@ pub fn build_board(config: &AppConfig, logger: Arc<Logger>) -> Result<Box<dyn Bo
             let backend = trello::TrelloBackend::new(
                 trello_cfg.api_key.clone(),
                 trello_cfg.token.clone(),
-                config.board.id.clone(),
+                trello_cfg.board_id.clone(),
                 trello_cfg.member_id.clone(),
                 config.agent.name.clone(),
                 logger,
             );
+            Ok(Box::new(backend))
+        }
+        "linear" => {
+            let linear_cfg = config.linear.as_ref().ok_or_else(|| {
+                OrgaError::ConfigError("[linear] section missing".into())
+            })?;
+            let backend = linear::LinearBackend::new(
+                linear_cfg.api_key.clone(),
+                linear_cfg.team_id.clone(),
+                config.agent.name.clone(),
+                logger,
+            )?;
             Ok(Box::new(backend))
         }
         other => Err(OrgaError::ConfigError(format!(

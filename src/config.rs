@@ -13,8 +13,13 @@ pub struct AgentConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct BoardConfig {
-    pub id: String,
     pub backend: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LinearConfig {
+    pub api_key: String,
+    pub team_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +27,7 @@ pub struct TrelloConfig {
     pub api_key: String,
     pub token: String,
     pub member_id: String,
+    pub board_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +70,7 @@ pub struct AppConfig {
     pub agent: AgentConfig,
     pub board: BoardConfig,
     pub trello: Option<TrelloConfig>,
+    pub linear: Option<LinearConfig>,
     pub memory: Option<MemoryConfig>,
     pub artifact: Option<ArtifactConfig>,
     pub logging: Option<LoggingConfig>,
@@ -110,7 +117,7 @@ impl AppConfig {
     }
 
     fn validate(&mut self) -> Result<(), OrgaError> {
-        const SUPPORTED: &[&str] = &["trello"];
+        const SUPPORTED: &[&str] = &["trello", "linear"];
         if !SUPPORTED.contains(&self.board.backend.as_str()) {
             return Err(OrgaError::ConfigError(format!(
                 "unsupported backend '{}'. Supported backends: {}",
@@ -122,6 +129,29 @@ impl AppConfig {
             return Err(OrgaError::ConfigError(
                 "backend is 'trello' but [trello] section is missing from config".into(),
             ));
+        }
+        if self.board.backend == "linear" && self.linear.is_none() {
+            return Err(OrgaError::ConfigError(
+                "backend is 'linear' but [linear] section is missing from config".into(),
+            ));
+        }
+        if self.board.backend == "trello" {
+            if let Some(ref t) = self.trello {
+                if t.board_id.is_empty() {
+                    return Err(OrgaError::ConfigError(
+                        "[trello] board_id is required".into(),
+                    ));
+                }
+            }
+        }
+        if self.board.backend == "linear" {
+            if let Some(ref l) = self.linear {
+                if l.team_id.is_empty() {
+                    return Err(OrgaError::ConfigError(
+                        "[linear] team_id is required".into(),
+                    ));
+                }
+            }
         }
         for entry in &mut self.workflow {
             match (&entry.prompt, &entry.prompt_file) {
@@ -211,13 +241,13 @@ mod tests {
 name = "agent-1"
 
 [board]
-id = "board-xyz"
 backend = "trello"
 
 [trello]
 api_key = "key"
 token = "tok"
 member_id = "abc123"
+board_id = "board-xyz"
 "#;
 
     #[test]
@@ -248,7 +278,7 @@ member_id = "abc123"
 
     #[test]
     fn unknown_backend_fails() {
-        let content = VALID_CONFIG.replace("backend = \"trello\"", "backend = \"linear\"");
+        let content = VALID_CONFIG.replace("backend = \"trello\"", "backend = \"notion\"");
         let f = write_config(&content);
         let err = AppConfig::load(f.path()).unwrap_err();
         assert!(err.to_string().contains("unsupported backend"));
@@ -261,7 +291,6 @@ member_id = "abc123"
 name = "agent-1"
 
 [board]
-id = "board-xyz"
 backend = "trello"
 "#;
         let f = write_config(content);
@@ -433,5 +462,45 @@ backend = "trello"
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.logging.as_ref().unwrap().debug, Some(true));
+    }
+
+    const VALID_LINEAR_CONFIG: &str = r#"
+[agent]
+name = "agent-1"
+
+[board]
+backend = "linear"
+
+[linear]
+api_key = "lin_api_abc123"
+team_id = "team-xyz"
+"#;
+
+    #[test]
+    fn linear_backend_recognized() {
+        let f = write_config(VALID_LINEAR_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.board.backend, "linear");
+    }
+
+    #[test]
+    fn valid_linear_config_loads() {
+        let f = write_config(VALID_LINEAR_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.linear.unwrap().api_key, "lin_api_abc123");
+    }
+
+    #[test]
+    fn missing_linear_section_fails() {
+        let content = r#"
+[agent]
+name = "agent-1"
+
+[board]
+backend = "linear"
+"#;
+        let f = write_config(content);
+        let err = AppConfig::load(f.path()).unwrap_err();
+        assert!(err.to_string().contains("[linear] section"));
     }
 }

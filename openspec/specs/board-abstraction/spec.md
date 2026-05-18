@@ -12,7 +12,7 @@ The system SHALL define a `Board` trait that all backend adapters must implement
 
 #### Scenario: Unknown backend
 - **WHEN** the config specifies an unrecognized backend name
-- **THEN** the CLI exits with a non-zero code and prints an error listing supported backends
+- **THEN** the CLI exits with a non-zero code and prints an error listing supported backends: `trello`, `linear`
 
 ### Requirement: Ticket data model
 The `Board` trait SHALL operate on a shared `Ticket` type that is backend-agnostic. The `Ticket` type SHALL include: `id`, `title`, `description`, `list_id`, `list_name`, `url`, `completed` (bool), `assignees` (Vec of usernames), `checklists` (Vec of checklist with items), and `comments` (Vec of Comment). The `completed` field SHALL be `true` when the ticket is closed/archived on the backend.

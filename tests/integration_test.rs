@@ -404,7 +404,92 @@ fn comment_agent_name_null_for_humans() {
     assert!(parsed["agent_name"].is_null());
 }
 
-// ── Artifact store integration tests ─────────────────────────────────────────
+// ── Live integration tests (require real config) ──────────────────────────────
+// Run with: cargo test -- --ignored
+
+#[cfg(test)]
+mod live {
+    use std::sync::Arc;
+    use orga::board::build_board;
+    use orga::config::AppConfig;
+
+    fn load_board() -> Box<dyn orga::board::Board> {
+        let config_path = AppConfig::resolve_path(None);
+        let config = AppConfig::load(&config_path).expect("failed to load config");
+        let logger = Arc::new(config.logger());
+        build_board(&config, logger).expect("failed to build board")
+    }
+
+    #[test]
+    #[ignore]
+    fn live_list_teams() {
+        let config_path = AppConfig::resolve_path(None);
+        let config = AppConfig::load(&config_path).expect("failed to load config");
+        let linear_cfg = config.linear.as_ref().expect("no [linear] config");
+        let client = reqwest::blocking::Client::new();
+        let resp = client
+            .post("https://api.linear.app/graphql")
+            .header("Authorization", linear_cfg.api_key.as_str())
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "query": "{ teams { nodes { id name } } }" }))
+            .send()
+            .unwrap();
+        let body: serde_json::Value = resp.json().unwrap();
+        println!("{}", serde_json::to_string_pretty(&body).unwrap());
+    }
+
+    #[test]
+    #[ignore]
+    fn live_whoami() {
+        let board = load_board();
+        let me = board.whoami().unwrap();
+        assert!(!me.id.is_empty(), "id should not be empty");
+        assert!(!me.username.is_empty(), "username should not be empty");
+        println!("whoami: {} ({})", me.username, me.id);
+    }
+
+    #[test]
+    #[ignore]
+    fn live_list_columns() {
+        let board = load_board();
+        let cols = board.list_columns().unwrap();
+        assert!(!cols.is_empty(), "expected at least one column");
+        for col in &cols {
+            println!("column: {} ({})", col.name, col.id);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn live_get_ticket() {
+        let board = load_board();
+        let tickets = board.list_assigned().unwrap();
+        assert!(!tickets.is_empty(), "need at least one assigned ticket to test get_ticket");
+        let id = &tickets[0].id;
+        let ticket = board.get_ticket(id).unwrap();
+        assert_eq!(ticket.summary.id, *id);
+        assert!(!ticket.summary.title.is_empty());
+        println!("ticket: {} — {}", ticket.summary.title, ticket.summary.url);
+        println!("  state: {} ({})", ticket.summary.list_name, ticket.summary.list_id);
+        println!("  assignees: {}", ticket.assignees.iter().map(|m| m.username.as_str()).collect::<Vec<_>>().join(", "));
+        println!("  comments: {}", ticket.comments.len());
+        println!("  checklists: {}", ticket.checklists.len());
+        for cl in &ticket.checklists {
+            println!("    [{}] {} items", cl.name, cl.items.len());
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn live_return_ticket() {
+        let board = load_board();
+        let tickets = board.list_assigned().unwrap();
+        assert!(!tickets.is_empty(), "need at least one assigned ticket to test return_ticket");
+        let id = &tickets[0].id;
+        board.return_ticket(id, Some("returning ticket via orga live test")).unwrap();
+        println!("returned ticket {id}");
+    }
+}
 
 use git2::{Repository, Signature};
 use std::path::Path;
