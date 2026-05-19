@@ -271,15 +271,25 @@ impl LinearBackend {
             full_name: u.display_name.clone(),
         });
 
-        let last_commenter_is_agent = issue
-            .comments
-            .nodes
-            .last()
-            .and_then(|c| {
-                let (_, agent_name) = parse_agent_tag(&c.body);
-                agent_name
-            })
-            .is_some();
+        let last_commenter_is_agent = {
+            let mut dated: Vec<(DateTime<chrono::Utc>, &LinearCommentSummary)> = issue
+                .comments
+                .nodes
+                .iter()
+                .filter_map(|c| {
+                    let at = DateTime::parse_from_rfc3339(&c.created_at).ok()?.with_timezone(&chrono::Utc);
+                    Some((at, c))
+                })
+                .collect();
+            dated.sort_by_key(|(at, _)| *at);
+            dated
+                .last()
+                .and_then(|(_, c)| {
+                    let (_, agent_name) = parse_agent_tag(&c.body);
+                    agent_name
+                })
+                .is_some()
+        };
 
         TicketSummary {
             id: issue.id.clone(),
@@ -493,6 +503,8 @@ struct LinearComment {
 #[derive(Debug, Deserialize)]
 struct LinearCommentSummary {
     body: String,
+    #[serde(rename = "createdAt")]
+    created_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -564,8 +576,8 @@ mod tests {
         assert_eq!(agent_name, None);
     }
 
-    fn make_summary_comment(body: &str) -> LinearCommentSummary {
-        LinearCommentSummary { body: body.into() }
+    fn make_summary_comment(body: &str, created_at: &str) -> LinearCommentSummary {
+        LinearCommentSummary { body: body.into(), created_at: created_at.into() }
     }
 
     fn make_issue_summary(comments: Vec<LinearCommentSummary>) -> LinearIssueSummary {
@@ -597,8 +609,8 @@ mod tests {
     fn last_commenter_is_agent_true_when_tagged() {
         let backend = make_backend();
         let issue = make_issue_summary(vec![
-            make_summary_comment("human comment"),
-            make_summary_comment("agent reply\n\n_[orga:agent-1]_"),
+            make_summary_comment("human comment", "2024-01-01T10:00:00Z"),
+            make_summary_comment("agent reply\n\n_[orga:agent-1]_", "2024-01-01T11:00:00Z"),
         ]);
         let summary = backend.linear_issue_to_summary(&issue);
         assert!(summary.last_commenter_is_agent);
@@ -608,11 +620,22 @@ mod tests {
     fn last_commenter_is_agent_false_when_not_tagged() {
         let backend = make_backend();
         let issue = make_issue_summary(vec![
-            make_summary_comment("agent reply\n\n_[orga:agent-1]_"),
-            make_summary_comment("human reply"),
+            make_summary_comment("agent reply\n\n_[orga:agent-1]_", "2024-01-01T10:00:00Z"),
+            make_summary_comment("human reply", "2024-01-01T11:00:00Z"),
         ]);
         let summary = backend.linear_issue_to_summary(&issue);
         assert!(!summary.last_commenter_is_agent);
+    }
+
+    #[test]
+    fn last_commenter_is_agent_true_when_agent_is_latest_by_timestamp() {
+        let backend = make_backend();
+        let issue = make_issue_summary(vec![
+            make_summary_comment("agent reply\n\n_[orga:agent-1]_", "2024-01-01T12:00:00Z"),
+            make_summary_comment("human reply", "2024-01-01T10:00:00Z"),
+        ]);
+        let summary = backend.linear_issue_to_summary(&issue);
+        assert!(summary.last_commenter_is_agent);
     }
 
     #[test]
