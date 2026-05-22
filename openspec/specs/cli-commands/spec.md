@@ -142,7 +142,6 @@ All read commands SHALL support a `--json` flag that switches output to machine-
 - **WHEN** any command fails and `--json` is passed
 - **THEN** error output is `{"error": "<message>"}` to stderr with a non-zero exit code
 
-
 ### Requirement: Init command
 The CLI SHALL provide `orga init` as a top-level command (not under any subcommand group) that launches the interactive setup wizard. It SHALL be listed in `orga --help` output.
 
@@ -182,4 +181,34 @@ The CLI SHALL provide `orga ticket return <id>` as a subcommand under `ticket`. 
 #### Scenario: --comment flag accepted
 - **WHEN** `orga ticket return <id> --comment "some text"` is run
 - **THEN** the command accepts the flag without error
+
+### Requirement: Ticket compact command
+The CLI SHALL provide `orga ticket compact <id> --summary <text>` to store a compaction record for a ticket. The `--summary` argument SHALL be required and non-empty. On success the command SHALL print `{"ok": true}` with `--json` or a human-readable confirmation without it.
+
+#### Scenario: Compact with summary
+- **WHEN** `ticket compact <id> --summary "..."` is called with a non-empty summary
+- **THEN** the compaction record is stored and the command exits with code 0
+
+#### Scenario: Empty summary rejected
+- **WHEN** `ticket compact <id> --summary ""` is called
+- **THEN** the command exits with a non-zero code and prints an error
+
+#### Scenario: JSON success output
+- **WHEN** `ticket compact <id> --summary "..."` succeeds with `--json`
+- **THEN** output is `{"ok": true}`
+
+### Requirement: Ticket decompact command
+The CLI SHALL provide `orga ticket decompact <id>` to delete the stored compaction record for a ticket. On success the command SHALL print `{"ok": true}` with `--json` or a human-readable confirmation without it.
+
+#### Scenario: Decompact existing record
+- **WHEN** `ticket decompact <id>` is called and a compaction record exists
+- **THEN** the record is deleted and the command exits with code 0
+
+#### Scenario: Decompact with no record is a no-op
+- **WHEN** `ticket decompact <id>` is called and no compaction record exists
+- **THEN** the command exits with code 0 without error
+
+#### Scenario: JSON success output
+- **WHEN** `ticket decompact <id>` succeeds with `--json`
+- **THEN** output is `{"ok": true}`
 

@@ -231,6 +231,8 @@ impl TrelloBackend {
             assignees,
             checklists,
             comments,
+            comment_compaction: None,
+            compaction_suggested: false,
         })
     }
 

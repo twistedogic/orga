@@ -2,6 +2,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommentCompaction {
+    pub summary: String,
+    pub compacted_through: DateTime<Utc>,
+    pub compacted_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactMeta {
     pub ticket_id: String,
     pub agent_name: String,
@@ -72,4 +79,8 @@ pub struct Ticket {
     pub assignees: Vec<Member>,
     pub checklists: Vec<Checklist>,
     pub comments: Vec<Comment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment_compaction: Option<CommentCompaction>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub compaction_suggested: bool,
 }

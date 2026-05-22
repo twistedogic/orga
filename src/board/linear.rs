@@ -253,6 +253,8 @@ impl LinearBackend {
             assignees,
             checklists: sub_checklist,
             comments,
+            comment_compaction: None,
+            compaction_suggested: false,
         }
     }
 

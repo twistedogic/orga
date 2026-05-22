@@ -76,6 +76,7 @@ pub struct AppConfig {
     pub logging: Option<LoggingConfig>,
     #[serde(default)]
     pub workflow: Vec<WorkflowEntry>,
+    pub comment_compaction_threshold: Option<usize>,
 }
 
 impl AppConfig {
@@ -206,6 +207,10 @@ impl AppConfig {
             .iter()
             .find(|e| e.column.to_lowercase() == lower)
             .and_then(|e| e.prompt.as_deref())
+    }
+
+    pub fn compaction_threshold(&self) -> usize {
+        self.comment_compaction_threshold.unwrap_or(5)
     }
 
 }

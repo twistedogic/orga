@@ -29,6 +29,18 @@ orga ticket show --json <id>   # load full ticket: description, comments, checkl
 
 Check `comments[-1].who.username` against your username from `whoami`.
 
+### Comment compaction
+
+If `ticket show` returns `"compaction_suggested": true`, the ticket has more than the configured threshold of comments. Summarize the older discussion yourself and store it before proceeding:
+
+```bash
+orga ticket compact <id> --summary "<your prose summary of the discussion so far>"
+```
+
+Future `ticket show` calls will return `comment_compaction: { summary, compacted_through, compacted_count }` plus only comments after the boundary — keeping context lean.
+
+
+
 ## Working a ticket
 
 ### Load memory first
@@ -126,6 +138,7 @@ orga ticket show --json <id>
 orga ticket comment <id> "<text>"
 orga ticket move <id> "<list name>"
 orga ticket return <id> [--comment "<text>"]
+orga ticket compact <id> --summary "<text>"   # store compaction summary
 orga ticket assign <id> <username>
 orga ticket create-sub <parent_id> "<title>"
 orga checklist add <ticket_id> "<text>"
@@ -157,6 +170,8 @@ member_id = "..."
 
 [memory]          # optional
 path = "/path/to/memory.db"   # default: ~/.orga/memory.db
+
+comment_compaction_threshold = 5   # optional — top-level key; default 5; triggers compaction_suggested hint on ticket show
 
 [artifact]        # optional — required for orga artifact commands
 backend = "git"

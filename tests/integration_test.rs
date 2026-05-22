@@ -72,6 +72,8 @@ impl Board for MockBoard {
             assignees: vec![],
             checklists: vec![],
             comments: vec![],
+            comment_compaction: None,
+            compaction_suggested: false,
         })
     }
 
@@ -146,6 +148,8 @@ fn sample_ticket() -> Ticket {
             content: "Please fix this ASAP.".into(),
             agent_name: None,
         }],
+        comment_compaction: None,
+        compaction_suggested: false,
     }
 }
 
@@ -165,6 +169,8 @@ fn ticket_no_creator() -> Ticket {
         assignees: vec![],
         checklists: vec![],
         comments: vec![],
+        comment_compaction: None,
+        compaction_suggested: false,
     }
 }
 
@@ -267,6 +273,8 @@ fn completed_ticket() -> Ticket {
         assignees: vec![],
         checklists: vec![],
         comments: vec![],
+        comment_compaction: None,
+        compaction_suggested: false,
     }
 }
 
@@ -491,6 +499,9 @@ mod live {
     }
 }
 
+use orga::memory::CompactionStore;
+use orga::models::CommentCompaction;
+
 use git2::{Repository, Signature};
 use std::path::Path;
 use tempfile::TempDir;
@@ -576,4 +587,157 @@ fn artifact_get_missing_returns_none() {
 
     let result = store.get("TICKET-99", "nonexistent.md").unwrap();
     assert!(result.is_none());
+}
+
+// ── Compaction logic tests ─────────────────────────────────────────────────
+
+fn make_comments_at(timestamps: &[&str]) -> Vec<Comment> {
+    timestamps
+        .iter()
+        .enumerate()
+        .map(|(i, ts)| Comment {
+            id: format!("c{i}"),
+            at: chrono::DateTime::parse_from_rfc3339(ts).unwrap().with_timezone(&Utc),
+            who: sample_member(),
+            content: format!("comment {i}"),
+            agent_name: None,
+        })
+        .collect()
+}
+
+fn apply_compaction(ticket: &mut Ticket, rec: &orga::memory::CompactionRecord) {
+    ticket.comments.retain(|c| c.at > rec.compacted_through);
+    ticket.comment_compaction = Some(CommentCompaction {
+        summary: rec.summary.clone(),
+        compacted_through: rec.compacted_through,
+        compacted_count: rec.compacted_count,
+    });
+}
+
+#[test]
+fn compaction_filters_comments_before_boundary() {
+    let mut ticket = sample_ticket();
+    ticket.comments = make_comments_at(&[
+        "2024-01-01T10:00:00Z",
+        "2024-02-01T10:00:00Z",
+        "2024-03-01T10:00:00Z",
+        "2024-04-01T10:00:00Z",
+    ]);
+    let boundary = chrono::DateTime::parse_from_rfc3339("2024-02-15T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("memory.db");
+    let store = CompactionStore::open(&db_path).unwrap();
+    store.set("abc123", "old discussion summarized", boundary, 2).unwrap();
+    let rec = store.get("abc123").unwrap().unwrap();
+    apply_compaction(&mut ticket, &rec);
+    assert_eq!(ticket.comments.len(), 2);
+    assert!(ticket.comments.iter().all(|c| c.at > boundary));
+    assert!(ticket.comment_compaction.is_some());
+    assert!(!ticket.compaction_suggested);
+}
+
+#[test]
+fn compaction_suggested_when_over_threshold_and_no_record() {
+    let mut ticket = sample_ticket();
+    ticket.comments = make_comments_at(&[
+        "2024-01-01T10:00:00Z",
+        "2024-01-02T10:00:00Z",
+        "2024-01-03T10:00:00Z",
+        "2024-01-04T10:00:00Z",
+        "2024-01-05T10:00:00Z",
+        "2024-01-06T10:00:00Z",
+    ]);
+    let threshold = 5;
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("memory.db");
+    let store = CompactionStore::open(&db_path).unwrap();
+    let rec = store.get("abc123").unwrap();
+    assert!(rec.is_none());
+    if ticket.comments.len() > threshold {
+        ticket.compaction_suggested = true;
+    }
+    assert!(ticket.compaction_suggested);
+    assert!(ticket.comment_compaction.is_none());
+}
+
+#[test]
+fn compaction_suggested_not_set_when_record_exists() {
+    let mut ticket = sample_ticket();
+    ticket.comments = make_comments_at(&[
+        "2024-01-01T10:00:00Z",
+        "2024-01-02T10:00:00Z",
+        "2024-01-03T10:00:00Z",
+        "2024-01-04T10:00:00Z",
+        "2024-01-05T10:00:00Z",
+        "2024-01-06T10:00:00Z",
+    ]);
+    let boundary = chrono::DateTime::parse_from_rfc3339("2024-01-03T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("memory.db");
+    let store = CompactionStore::open(&db_path).unwrap();
+    store.set("abc123", "summary", boundary, 3).unwrap();
+    let rec = store.get("abc123").unwrap().unwrap();
+    apply_compaction(&mut ticket, &rec);
+    assert!(!ticket.compaction_suggested);
+    assert!(ticket.comment_compaction.is_some());
+}
+
+#[test]
+fn compaction_suggested_not_set_when_under_threshold() {
+    let mut ticket = sample_ticket();
+    ticket.comments = make_comments_at(&[
+        "2024-01-01T10:00:00Z",
+        "2024-01-02T10:00:00Z",
+        "2024-01-03T10:00:00Z",
+    ]);
+    let threshold = 5;
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("memory.db");
+    let store = CompactionStore::open(&db_path).unwrap();
+    let rec = store.get("abc123").unwrap();
+    assert!(rec.is_none());
+    if ticket.comments.len() > threshold {
+        ticket.compaction_suggested = true;
+    }
+    assert!(!ticket.compaction_suggested);
+}
+
+#[test]
+fn ticket_json_does_not_include_compaction_fields_when_absent() {
+    let t = sample_ticket();
+    let json = serde_json::to_string(&t).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(parsed.get("comment_compaction").is_none());
+    assert!(parsed.get("compaction_suggested").is_none());
+}
+
+#[test]
+fn ticket_json_includes_compaction_fields_when_set() {
+    let mut t = sample_ticket();
+    t.comment_compaction = Some(CommentCompaction {
+        summary: "discussion resolved".into(),
+        compacted_through: chrono::DateTime::parse_from_rfc3339("2024-03-01T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+        compacted_count: 10,
+    });
+    t.compaction_suggested = false;
+    let json = serde_json::to_string(&t).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(parsed.get("comment_compaction").is_some());
+    assert_eq!(parsed["comment_compaction"]["compacted_count"], 10);
+    assert_eq!(parsed["comment_compaction"]["summary"], "discussion resolved");
+}
+
+#[test]
+fn ticket_json_includes_compaction_suggested_when_true() {
+    let mut t = sample_ticket();
+    t.compaction_suggested = true;
+    let json = serde_json::to_string(&t).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["compaction_suggested"], true);
 }

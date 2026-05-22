@@ -10,8 +10,8 @@ use orga::config::AppConfig;
 use orga::error::OrgaError;
 use orga::init::run_init;
 use orga::logging::Logger;
-use orga::memory::MemoryStore;
-use orga::models::{Column, Ticket, TicketSummary};
+use orga::memory::{CompactionStore, MemoryStore};
+use orga::models::{Column, CommentCompaction, Ticket, TicketSummary};
 
 #[derive(Parser)]
 #[command(
@@ -98,6 +98,18 @@ enum TicketCommands {
         id: String,
         #[arg(long, help = "Comment to post before returning")]
         comment: Option<String>,
+    },
+    #[command(about = "Store a compaction summary for a ticket's comments")]
+    Compact {
+        #[arg(help = "Ticket ID")]
+        id: String,
+        #[arg(long, help = "Summary text written by the agent")]
+        summary: String,
+    },
+    #[command(about = "Delete the stored compaction record for a ticket (manual reset)")]
+    Decompact {
+        #[arg(help = "Ticket ID")]
+        id: String,
     },
 }
 
@@ -241,7 +253,19 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
                     }
                 }
                 TicketCommands::Show { id } => {
-                    let ticket = board.get_ticket(&id)?;
+                    let mut ticket = board.get_ticket(&id)?;
+                    let db_path = config.memory_db_path();
+                    let compaction_store = CompactionStore::open(&db_path)?;
+                    if let Some(rec) = compaction_store.get(&id)? {
+                        ticket.comments.retain(|c| c.at > rec.compacted_through);
+                        ticket.comment_compaction = Some(CommentCompaction {
+                            summary: rec.summary,
+                            compacted_through: rec.compacted_through,
+                            compacted_count: rec.compacted_count,
+                        });
+                    } else if ticket.comments.len() > config.compaction_threshold() {
+                        ticket.compaction_suggested = true;
+                    }
                     let workflow_prompt = config.workflow_prompt(&ticket.summary.list_name);
                     if cli.json {
                         let mut val = serde_json::to_value(&ticket).unwrap();
@@ -300,6 +324,36 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
                         println!("{}", json!({"ok": true}));
                     } else {
                         println!("returned {id} to creator");
+                    }
+                }
+                TicketCommands::Compact { id, summary } => {
+                    if summary.is_empty() {
+                        return Err(OrgaError::BackendError("summary cannot be empty".into()));
+                    }
+                    let ticket = board.get_ticket(&id)?;
+                    let boundary = ticket
+                        .comments
+                        .last()
+                        .map(|c| c.at)
+                        .unwrap_or_else(chrono::Utc::now);
+                    let count = ticket.comments.len();
+                    let db_path = config.memory_db_path();
+                    let compaction_store = CompactionStore::open(&db_path)?;
+                    compaction_store.set(&id, &summary, boundary, count)?;
+                    if cli.json {
+                        println!("{}", json!({"ok": true}));
+                    } else {
+                        println!("compaction stored for {id} ({count} comments through {})", boundary.format("%Y-%m-%d %H:%M"));
+                    }
+                }
+                TicketCommands::Decompact { id } => {
+                    let db_path = config.memory_db_path();
+                    let compaction_store = CompactionStore::open(&db_path)?;
+                    compaction_store.delete(&id)?;
+                    if cli.json {
+                        println!("{}", json!({"ok": true}));
+                    } else {
+                        println!("compaction record deleted for {id}");
                     }
                 }
             }
@@ -458,11 +512,25 @@ fn print_ticket_detail(t: &Ticket) {
             }
         }
     }
-    if !t.comments.is_empty() {
+    if !t.comments.is_empty() || t.comment_compaction.is_some() || t.compaction_suggested {
         println!("\n## Comments");
+        if let Some(ref cc) = t.comment_compaction {
+            println!(
+                "  [compacted: {} comments through {}]",
+                cc.compacted_count,
+                cc.compacted_through.format("%Y-%m-%d %H:%M")
+            );
+            println!("  Summary: {}", cc.summary);
+            if !t.comments.is_empty() {
+                println!("  ---");
+            }
+        }
         for c in &t.comments {
             println!("  @{} at {}:", c.who.username, c.at.format("%Y-%m-%d %H:%M"));
             println!("    {}", c.content);
+        }
+        if t.compaction_suggested {
+            println!("  [compaction suggested: consider running `ticket compact` to reduce context]");
         }
     }
 }
