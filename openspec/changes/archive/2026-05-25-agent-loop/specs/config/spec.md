@@ -1,22 +1,4 @@
-# config Specification
-
-## Purpose
-TBD - created by archiving change agent-board-cli. Update Purpose after archive.
-## Requirements
-### Requirement: TOML config file loading
-The CLI SHALL load configuration from a TOML file. The default path SHALL be `~/.orga/config.toml`, overridable via the `--config <path>` global flag or `ORGA_CONFIG` environment variable.
-
-#### Scenario: Config loaded from default path
-- **WHEN** the CLI is invoked without `--config`
-- **THEN** config is loaded from `~/.orga/config.toml`
-
-#### Scenario: Config loaded from explicit path
-- **WHEN** `--config /path/to/config.toml` is passed
-- **THEN** config is loaded from the specified path
-
-#### Scenario: Config loaded from environment variable
-- **WHEN** `ORGA_CONFIG=/path/to/config.toml` is set
-- **THEN** config is loaded from that path (overridden by `--config` if both are set)
+## MODIFIED Requirements
 
 ### Requirement: Config schema
 The config file SHALL support the following structure:
@@ -69,6 +51,22 @@ max_artifact_inline_bytes = 8192    # optional: default 8192
 
 All fields under `[agent]`, `[board]`, and the backend-specific section SHALL be required. The `[memory]` section is optional; if absent, the default path is used. The `member_id` field SHALL live under `[trello]`, not `[agent]`. The `[artifact]` section is optional; if absent, artifact commands fail with a clear config error. Within `[artifact.git]`, `path` is required; `remote` and `branch` are optional (defaulting to no remote and `"main"` respectively). The `[logging]` section is optional; if absent, `file` defaults to `~/.orga/orga.log` and `debug` defaults to `false`. The `[[workflow]]` section is optional; if absent, no workflow prompts are injected. Each `[[workflow]]` entry requires `column` and exactly one of `prompt` or `prompt_file`. The `[llm]` section is optional; if absent, `orga agent` fails with a clear config error; all other commands are unaffected.
 
+#### Scenario: Valid config with llm section
+- **WHEN** a valid config file includes a `[llm]` section with `provider`, `api_key`, and `model`
+- **THEN** the CLI initializes without error and `orga agent` can run
+
+#### Scenario: Missing llm section does not affect other commands
+- **WHEN** the config file does not include `[llm]`
+- **THEN** all commands except `orga agent` work normally; `orga agent` exits with a config error
+
+#### Scenario: llm section with endpoint override
+- **WHEN** `[llm]` includes `endpoint = "https://proxy.example.com/v1"`
+- **THEN** the LLM client uses that endpoint instead of the provider default
+
+#### Scenario: llm section missing required fields
+- **WHEN** `[llm]` is present but missing `api_key` or `model`
+- **THEN** the CLI exits with a config error naming the missing field
+
 #### Scenario: Valid config
 - **WHEN** a valid config file is loaded
 - **THEN** the CLI initializes without error
@@ -100,31 +98,3 @@ All fields under `[agent]`, `[board]`, and the backend-specific section SHALL be
 #### Scenario: Config without logging section
 - **WHEN** the config file does not include `[logging]`
 - **THEN** the logger uses `~/.orga/orga.log` as the default path and debug is disabled
-
-#### Scenario: Valid config with llm section
-- **WHEN** a valid config file includes a `[llm]` section with `provider`, `api_key`, and `model`
-- **THEN** the CLI initializes without error and `orga agent` can run
-
-#### Scenario: Missing llm section does not affect other commands
-- **WHEN** the config file does not include `[llm]`
-- **THEN** all commands except `orga agent` work normally; `orga agent` exits with a config error
-
-#### Scenario: llm section with endpoint override
-- **WHEN** `[llm]` includes `endpoint = "https://proxy.example.com/v1"`
-- **THEN** the LLM client uses that endpoint instead of the provider default
-
-#### Scenario: llm section missing required fields
-- **WHEN** `[llm]` is present but missing `api_key` or `model`
-- **THEN** the CLI exits with a config error naming the missing field
-
-### Requirement: Config validation
-The CLI SHALL validate the config at startup before executing any command. Unknown backend values SHALL produce an error.
-
-#### Scenario: Unknown backend
-- **WHEN** `board.backend` is set to an unrecognized value
-- **THEN** the CLI exits with a non-zero code listing supported backends
-
-#### Scenario: Missing config file
-- **WHEN** the config file does not exist at the resolved path
-- **THEN** the CLI exits with a non-zero code and prints the expected config path
-

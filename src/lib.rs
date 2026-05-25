@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod artifact;
 pub mod board;
 pub mod config;

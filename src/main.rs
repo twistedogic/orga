@@ -4,6 +4,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 
+use orga::agent::run_agent;
 use orga::artifact::build_artifact_store;
 use orga::board::build_board;
 use orga::config::AppConfig;
@@ -48,6 +49,13 @@ enum Commands {
     Whoami,
     #[command(subcommand, about = "Manage artifacts for a ticket")]
     Artifact(ArtifactCommands),
+    #[command(about = "Run the agent loop: poll tickets and act with an LLM")]
+    Agent {
+        #[arg(long, help = "Process the current ticket queue once and exit")]
+        once: bool,
+        #[arg(long, help = "Log planned actions without executing board mutations")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -177,12 +185,33 @@ enum ArtifactCommands {
 fn main() {
     let cli = Cli::parse();
     let default_logger = Logger::new(&orga::config::expand_tilde("~/.orga/orga.log"), false);
-    if let Err(e) = run(cli) {
+
+    let is_agent = matches!(cli.command, Commands::Agent { .. });
+
+    if is_agent {
+        let rt = tokio::runtime::Runtime::new().expect("failed to build tokio runtime");
+        if let Err(e) = rt.block_on(run(cli)) {
+            exit_error(&e.to_string(), &default_logger);
+        }
+    } else if let Err(e) = run_sync(cli) {
         exit_error(&e.to_string(), &default_logger);
     }
 }
 
-fn run(cli: Cli) -> Result<(), OrgaError> {
+async fn run(cli: Cli) -> Result<(), OrgaError> {
+    let config_path = AppConfig::resolve_path(cli.config.as_deref());
+    let config = AppConfig::load(&config_path)?;
+    let logger = Arc::new(config.logger());
+
+    match cli.command {
+        Commands::Agent { once, dry_run } => {
+            run_agent(once, dry_run, &config, Arc::clone(&logger)).await
+        }
+        _ => unreachable!("non-agent commands handled by run_sync"),
+    }
+}
+
+fn run_sync(cli: Cli) -> Result<(), OrgaError> {
     let config_path = AppConfig::resolve_path(cli.config.as_deref());
 
     if let Commands::Init = cli.command {
@@ -194,6 +223,7 @@ fn run(cli: Cli) -> Result<(), OrgaError> {
 
     match cli.command {
         Commands::Init => unreachable!(),
+        Commands::Agent { .. } => unreachable!("agent command handled by run()"),
         Commands::Columns => {
             let board = build_board(&config, Arc::clone(&logger))?;
             let columns = board.list_columns()?;

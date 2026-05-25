@@ -66,6 +66,31 @@ pub struct ArtifactConfig {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct LlmConfig {
+    pub provider: String,
+    pub api_key: String,
+    pub model: String,
+    pub endpoint: Option<String>,
+    pub poll_interval_secs: Option<u64>,
+    pub max_actions_per_ticket: Option<usize>,
+    pub max_artifact_inline_bytes: Option<usize>,
+}
+
+impl LlmConfig {
+    pub fn poll_interval_secs(&self) -> u64 {
+        self.poll_interval_secs.unwrap_or(60)
+    }
+
+    pub fn max_actions_per_ticket(&self) -> usize {
+        self.max_actions_per_ticket.unwrap_or(10)
+    }
+
+    pub fn max_artifact_inline_bytes(&self) -> usize {
+        self.max_artifact_inline_bytes.unwrap_or(8192)
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct AppConfig {
     pub agent: AgentConfig,
     pub board: BoardConfig,
@@ -74,6 +99,7 @@ pub struct AppConfig {
     pub memory: Option<MemoryConfig>,
     pub artifact: Option<ArtifactConfig>,
     pub logging: Option<LoggingConfig>,
+    pub llm: Option<LlmConfig>,
     #[serde(default)]
     pub workflow: Vec<WorkflowEntry>,
     pub comment_compaction_threshold: Option<usize>,
@@ -154,6 +180,26 @@ impl AppConfig {
                 }
             }
         }
+        if let Some(ref llm) = self.llm {
+            const SUPPORTED_PROVIDERS: &[&str] = &["anthropic", "openai"];
+            if !SUPPORTED_PROVIDERS.contains(&llm.provider.as_str()) {
+                return Err(OrgaError::ConfigError(format!(
+                    "[llm] unsupported provider '{}'. Supported providers: {}",
+                    llm.provider,
+                    SUPPORTED_PROVIDERS.join(", ")
+                )));
+            }
+            if llm.api_key.is_empty() {
+                return Err(OrgaError::ConfigError(
+                    "[llm] api_key is required".into(),
+                ));
+            }
+            if llm.model.is_empty() {
+                return Err(OrgaError::ConfigError(
+                    "[llm] model is required".into(),
+                ));
+            }
+        }
         for entry in &mut self.workflow {
             match (&entry.prompt, &entry.prompt_file) {
                 (Some(_), Some(_)) => {
@@ -211,6 +257,14 @@ impl AppConfig {
 
     pub fn compaction_threshold(&self) -> usize {
         self.comment_compaction_threshold.unwrap_or(5)
+    }
+
+    pub fn llm_config(&self) -> Result<&LlmConfig, OrgaError> {
+        self.llm.as_ref().ok_or_else(|| {
+            OrgaError::ConfigError(
+                "[llm] section is required for `orga agent` but is missing from config".into(),
+            )
+        })
     }
 
 }
@@ -507,5 +561,109 @@ backend = "linear"
         let f = write_config(content);
         let err = AppConfig::load(f.path()).unwrap_err();
         assert!(err.to_string().contains("[linear] section"));
+    }
+
+    const VALID_LLM_CONFIG: &str = r#"
+[agent]
+name = "agent-1"
+
+[board]
+backend = "trello"
+
+[trello]
+api_key = "key"
+token = "tok"
+member_id = "abc123"
+board_id = "board-xyz"
+
+[llm]
+provider = "anthropic"
+api_key = "sk-ant-test"
+model = "claude-opus-4-5"
+"#;
+
+    #[test]
+    fn valid_llm_section_loads() {
+        let f = write_config(VALID_LLM_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        let llm = cfg.llm.as_ref().unwrap();
+        assert_eq!(llm.provider, "anthropic");
+        assert_eq!(llm.api_key, "sk-ant-test");
+        assert_eq!(llm.model, "claude-opus-4-5");
+    }
+
+    #[test]
+    fn llm_config_helper_returns_ok() {
+        let f = write_config(VALID_LLM_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.llm_config().is_ok());
+    }
+
+    #[test]
+    fn llm_config_helper_absent_section_returns_err() {
+        let f = write_config(VALID_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        let err = cfg.llm_config().unwrap_err();
+        assert!(err.to_string().contains("[llm]"));
+    }
+
+    #[test]
+    fn llm_unknown_provider_fails() {
+        let content = VALID_LLM_CONFIG.replace("provider = \"anthropic\"", "provider = \"unknown\"");
+        let f = write_config(&content);
+        let err = AppConfig::load(f.path()).unwrap_err();
+        assert!(err.to_string().contains("unsupported provider"));
+    }
+
+    #[test]
+    fn llm_missing_api_key_fails() {
+        let content = VALID_LLM_CONFIG.replace("api_key = \"sk-ant-test\"", "api_key = \"\"");
+        let f = write_config(&content);
+        let err = AppConfig::load(f.path()).unwrap_err();
+        assert!(err.to_string().contains("api_key is required"));
+    }
+
+    #[test]
+    fn llm_missing_model_fails() {
+        let content = VALID_LLM_CONFIG.replace("model = \"claude-opus-4-5\"", "model = \"\"");
+        let f = write_config(&content);
+        let err = AppConfig::load(f.path()).unwrap_err();
+        assert!(err.to_string().contains("model is required"));
+    }
+
+    #[test]
+    fn llm_absent_section_does_not_affect_other_commands() {
+        let f = write_config(VALID_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.llm.is_none());
+        assert_eq!(cfg.board.backend, "trello");
+    }
+
+    #[test]
+    fn llm_defaults() {
+        let f = write_config(VALID_LLM_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        let llm = cfg.llm.as_ref().unwrap();
+        assert_eq!(llm.poll_interval_secs(), 60);
+        assert_eq!(llm.max_actions_per_ticket(), 10);
+        assert_eq!(llm.max_artifact_inline_bytes(), 8192);
+    }
+
+    #[test]
+    fn llm_endpoint_override() {
+        let content = format!("{VALID_LLM_CONFIG}endpoint = \"https://proxy.example.com/v1\"\n");
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.llm.as_ref().unwrap().endpoint.as_deref(), Some("https://proxy.example.com/v1"));
+    }
+
+    #[test]
+    fn llm_openai_provider_loads() {
+        let content = VALID_LLM_CONFIG
+            .replace("provider = \"anthropic\"", "provider = \"openai\"")
+            .replace("api_key = \"sk-ant-test\"", "api_key = \"sk-openai-test\"");
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.llm.as_ref().unwrap().provider, "openai");
     }
 }

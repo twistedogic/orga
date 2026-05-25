@@ -23,6 +23,10 @@ impl Logger {
         }
     }
 
+    pub fn info(&self, msg: &str) {
+        self.write_entry("INFO ", msg);
+    }
+
     pub fn error(&self, msg: &str) {
         self.write_entry("ERROR", msg);
     }
