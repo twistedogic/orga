@@ -35,7 +35,7 @@ The loop SHALL only process tickets where the last commenter is not the agent (i
 - **THEN** that ticket is skipped for this cycle
 
 ### Requirement: Per-ticket LLM tool-call cycle
-For each selected ticket, the loop SHALL build a context (system prompt + ticket content) and run a bounded tool-call cycle with the LLM. The cycle SHALL stop when the LLM calls `done()`, `skip()`, returns with no tool calls, or the `max_actions_per_ticket` cap is reached.
+For each selected ticket, the loop SHALL build a context (system prompt + ticket content) and run a bounded tool-call cycle with the LLM. The system prompt SHALL include an "## Available Skills" section listing all discovered skills when a skills folder is configured, and an "## Active Skills" section with full skill bodies for any skills that match the ticket. The cycle SHALL stop when the LLM calls `done()`, `skip()`, returns with no tool calls, or the `max_actions_per_ticket` cap is reached.
 
 #### Scenario: Cycle completes with done()
 - **WHEN** the LLM calls the `done` tool during a ticket cycle
@@ -52,6 +52,10 @@ For each selected ticket, the loop SHALL build a context (system prompt + ticket
 #### Scenario: Cycle completes with no tool calls
 - **WHEN** the LLM returns a response with no tool calls (stop_reason = end_turn)
 - **THEN** the cycle ends; no mutation is made
+
+#### Scenario: Skills injected into system prompt at cycle start
+- **WHEN** the LLM cycle starts for a ticket
+- **THEN** the system prompt includes available skills listing and any matched active skills before the first LLM call
 
 ### Requirement: Sequential ticket processing
 The loop SHALL process tickets one at a time in the order returned by `list_assigned`. Parallel processing SHALL NOT occur in v1.

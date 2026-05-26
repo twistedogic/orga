@@ -70,6 +70,8 @@ pub struct TicketSummary {
     pub completed: bool,
     pub creator: Option<Member>,
     pub last_commenter_is_agent: bool,
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

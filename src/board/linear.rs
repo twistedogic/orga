@@ -238,6 +238,15 @@ impl LinearBackend {
             .map(|s| s.state_type.as_deref() == Some("completed") || s.state_type.as_deref() == Some("cancelled"))
             .unwrap_or(false);
 
+        let labels: Vec<String> = issue
+            .labels
+            .unwrap_or_else(|| Nodes { nodes: vec![] })
+            .nodes
+            .into_iter()
+            .map(|l| l.name)
+            .filter(|n| !n.is_empty())
+            .collect();
+
         Ticket {
             summary: TicketSummary {
                 id: issue.id,
@@ -249,6 +258,7 @@ impl LinearBackend {
                 completed,
                 creator,
                 last_commenter_is_agent,
+                labels,
             },
             assignees,
             checklists: sub_checklist,
@@ -293,6 +303,12 @@ impl LinearBackend {
                 .is_some()
         };
 
+        let labels: Vec<String> = issue
+            .labels
+            .as_ref()
+            .map(|n| n.nodes.iter().map(|l| l.name.clone()).filter(|n| !n.is_empty()).collect())
+            .unwrap_or_default();
+
         TicketSummary {
             id: issue.id.clone(),
             title: issue.title.clone(),
@@ -303,6 +319,7 @@ impl LinearBackend {
             completed,
             creator,
             last_commenter_is_agent,
+            labels,
         }
     }
 }
@@ -326,7 +343,7 @@ impl Board for LinearBackend {
             issues: Nodes<LinearIssueSummary>,
         }
         let query = format!(
-            "{{ issues(filter: {{ team: {{ id: {{ eq: \"{}\" }} }} assignee: {{ id: {{ eq: \"{}\" }} }} }}) {{ nodes {{ id title description url state {{ id name type }} creator {{ id displayName }} comments {{ nodes {{ id body createdAt }} }} }} }} }}",
+            "{{ issues(filter: {{ team: {{ id: {{ eq: \"{}\" }} }} assignee: {{ id: {{ eq: \"{}\" }} }} }}) {{ nodes {{ id title description url state {{ id name type }} creator {{ id displayName }} comments {{ nodes {{ id body createdAt }} }} labels {{ nodes {{ name }} }} }} }} }}",
             self.team_id, self.viewer.id
         );
         let resp: Resp = self.gql(&query, serde_json::json!({}))?;
@@ -339,7 +356,7 @@ impl Board for LinearBackend {
             issue: LinearIssue,
         }
         let query = format!(
-            "{{ issue(id: \"{id}\") {{ id title description url state {{ id name type }} creator {{ id displayName }} assignee {{ id displayName }} comments {{ nodes {{ id body createdAt user {{ id displayName }} }} }} children {{ nodes {{ id title state {{ id name type }} }} }} }} }}"
+            "{{ issue(id: \"{id}\") {{ id title description url state {{ id name type }} creator {{ id displayName }} assignee {{ id displayName }} comments {{ nodes {{ id body createdAt user {{ id displayName }} }} }} children {{ nodes {{ id title state {{ id name type }} }} }} labels {{ nodes {{ name }} }} }} }}"
         );
         let resp: Resp = self.gql(&query, serde_json::json!({}))?;
         Ok(self.linear_issue_to_ticket(resp.issue))
@@ -517,6 +534,11 @@ struct LinearChildIssue {
 }
 
 #[derive(Debug, Deserialize)]
+struct LinearLabel {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct LinearIssue {
     id: String,
     title: String,
@@ -527,6 +549,7 @@ struct LinearIssue {
     assignee: Option<LinearUser>,
     comments: Nodes<LinearComment>,
     children: Nodes<LinearChildIssue>,
+    labels: Option<Nodes<LinearLabel>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -538,6 +561,7 @@ struct LinearIssueSummary {
     state: Option<LinearState>,
     creator: Option<LinearUser>,
     comments: Nodes<LinearCommentSummary>,
+    labels: Option<Nodes<LinearLabel>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -591,6 +615,7 @@ mod tests {
             state: Some(LinearState { id: "state-1".into(), name: "Todo".into(), state_type: Some("unstarted".into()) }),
             creator: None,
             comments: Nodes { nodes: comments },
+            labels: None,
         }
     }
 
@@ -659,6 +684,7 @@ mod tests {
             assignee: None,
             comments: Nodes { nodes: vec![] },
             children: Nodes { nodes: children },
+            labels: None,
         }
     }
 

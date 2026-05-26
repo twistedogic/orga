@@ -54,6 +54,11 @@ pub struct WorkflowEntry {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct SkillsConfig {
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct LoggingConfig {
     pub file: Option<String>,
     pub debug: Option<bool>,
@@ -103,6 +108,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub workflow: Vec<WorkflowEntry>,
     pub comment_compaction_threshold: Option<usize>,
+    pub skills: Option<SkillsConfig>,
 }
 
 impl AppConfig {
@@ -265,6 +271,10 @@ impl AppConfig {
                 "[llm] section is required for `orga agent` but is missing from config".into(),
             )
         })
+    }
+
+    pub fn skills_path(&self) -> Option<PathBuf> {
+        self.skills.as_ref().map(|s| expand_tilde(&s.path))
     }
 
 }
@@ -665,5 +675,32 @@ model = "claude-opus-4-5"
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.llm.as_ref().unwrap().provider, "openai");
+    }
+
+    #[test]
+    fn skills_section_absent_returns_none() {
+        let f = write_config(VALID_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.skills.is_none());
+        assert!(cfg.skills_path().is_none());
+    }
+
+    #[test]
+    fn skills_section_present_loads_path() {
+        let content = format!("{VALID_CONFIG}\n[skills]\npath = \"/tmp/skills\"\n");
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.skills.as_ref().unwrap().path, "/tmp/skills");
+        assert_eq!(cfg.skills_path(), Some(PathBuf::from("/tmp/skills")));
+    }
+
+    #[test]
+    fn skills_path_tilde_expanded() {
+        let content = format!("{VALID_CONFIG}\n[skills]\npath = \"~/.orga/skills\"\n");
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        let p = cfg.skills_path().unwrap();
+        assert!(!p.to_str().unwrap().contains('~'));
+        assert!(p.ends_with(".orga/skills"));
     }
 }

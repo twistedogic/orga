@@ -130,6 +130,15 @@ impl TrelloBackend {
             .map(|t| parse_agent_tag(t).1.is_some())
             .unwrap_or(false);
 
+        let labels: Vec<String> = card
+            .labels
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|l| l.name.clone())
+            .filter(|n| !n.is_empty())
+            .collect();
+
         TicketSummary {
             id: card.id.clone(),
             title: card.name.clone(),
@@ -140,6 +149,7 @@ impl TrelloBackend {
             completed: card.closed,
             creator,
             last_commenter_is_agent,
+            labels,
         }
     }
 
@@ -216,6 +226,14 @@ impl TrelloBackend {
             })
             .collect();
 
+        let labels: Vec<String> = card
+            .labels
+            .unwrap_or_default()
+            .into_iter()
+            .map(|l| l.name)
+            .filter(|n| !n.is_empty())
+            .collect();
+
         Ok(Ticket {
             summary: TicketSummary {
                 id: card.id,
@@ -227,6 +245,7 @@ impl TrelloBackend {
                 completed: card.closed,
                 creator,
                 last_commenter_is_agent,
+                labels,
             },
             assignees,
             checklists,
@@ -454,6 +473,12 @@ struct TrelloCard {
     checklists: Option<Vec<TrelloChecklist>>,
     members: Option<Vec<TrelloMember>>,
     actions: Option<Vec<TrelloAction>>,
+    labels: Option<Vec<TrelloLabel>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrelloLabel {
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -539,6 +564,7 @@ mod tests {
             checklists: None,
             members: None,
             actions: Some(actions),
+            labels: None,
         }
     }
 

@@ -3,6 +3,11 @@ use crate::config::{AppConfig, LlmConfig};
 use crate::memory::MemoryStore;
 use crate::models::Ticket;
 
+pub struct SkillContext {
+    pub available: Vec<(String, String)>,
+    pub active: Vec<(String, String)>,
+}
+
 pub struct TicketContext {
     pub system: String,
     pub user: String,
@@ -14,13 +19,14 @@ pub fn build_context(
     artifact_store: Option<&Box<dyn ArtifactStore>>,
     llm_cfg: &LlmConfig,
     app_cfg: &AppConfig,
+    skill_ctx: Option<&SkillContext>,
 ) -> TicketContext {
-    let system = build_system_prompt(ticket, app_cfg);
+    let system = build_system_prompt(ticket, app_cfg, skill_ctx);
     let user = build_user_message(ticket, memory_store, artifact_store, llm_cfg);
     TicketContext { system, user }
 }
 
-fn build_system_prompt(ticket: &Ticket, app_cfg: &AppConfig) -> String {
+fn build_system_prompt(ticket: &Ticket, app_cfg: &AppConfig, skill_ctx: Option<&SkillContext>) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     parts.push(format!(
@@ -36,8 +42,28 @@ Use `skip()` if the ticket is not actionable right now.",
         app_cfg.agent.name
     ));
 
+    if let Some(ctx) = skill_ctx {
+        if !ctx.available.is_empty() {
+            let mut section = "\n## Available Skills".to_string();
+            for (name, desc) in &ctx.available {
+                section.push_str(&format!("\n- **{name}**: {desc}"));
+            }
+            parts.push(section);
+        }
+    }
+
     if let Some(prompt) = app_cfg.workflow_prompt(&ticket.summary.list_name) {
         parts.push(format!("\n## Column Instructions\n{}", prompt));
+    }
+
+    if let Some(ctx) = skill_ctx {
+        if !ctx.active.is_empty() {
+            let mut section = "\n## Active Skills".to_string();
+            for (name, body) in &ctx.active {
+                section.push_str(&format!("\n### {name}\n{body}"));
+            }
+            parts.push(section);
+        }
     }
 
     parts.join("\n")
@@ -173,6 +199,7 @@ mod tests {
                 completed: false,
                 creator: Some(Member { id: "u1".to_string(), username: "alice".to_string(), full_name: "Alice".to_string() }),
                 last_commenter_is_agent: false,
+                labels: vec![],
             },
             assignees: vec![],
             checklists: vec![],
@@ -206,6 +233,7 @@ mod tests {
             llm: None,
             workflow: vec![],
             comment_compaction_threshold: None,
+            skills: None,
         }
     }
 
@@ -218,7 +246,7 @@ mod tests {
         let ticket = make_ticket("Fix the bug");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg());
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
         assert!(ctx.user.contains("Test Ticket"));
         assert!(ctx.user.contains("Fix the bug"));
     }
@@ -228,7 +256,7 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg());
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
         assert!(ctx.system.contains("bot-1"));
     }
 
@@ -238,7 +266,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
         mem.set("T-1", "remember this context").unwrap();
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg());
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
         assert!(ctx.user.contains("remember this context"));
     }
 
@@ -247,7 +275,7 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg());
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
         assert!(!ctx.user.contains("Agent Memory"));
     }
 
@@ -261,7 +289,7 @@ mod tests {
         });
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg());
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
         assert!(ctx.user.contains("first 10 comments: auth work"));
     }
 
@@ -302,7 +330,7 @@ mod tests {
         let store: Box<dyn ArtifactStore> = Box::new(InlineArtifactStore {
             content: "small content".to_string(),
         });
-        let ctx = build_context(&ticket, &mem, Some(&store), &make_llm_cfg(), &make_app_cfg());
+        let ctx = build_context(&ticket, &mem, Some(&store), &make_llm_cfg(), &make_app_cfg(), None);
         assert!(ctx.user.contains("small content"));
         assert!(!ctx.user.contains("too large"));
     }
@@ -316,8 +344,65 @@ mod tests {
         let store: Box<dyn ArtifactStore> = Box::new(InlineArtifactStore { content: big });
         let mut llm_cfg = make_llm_cfg();
         llm_cfg.max_artifact_inline_bytes = Some(100);
-        let ctx = build_context(&ticket, &mem, Some(&store), &llm_cfg, &make_app_cfg());
+        let ctx = build_context(&ticket, &mem, Some(&store), &llm_cfg, &make_app_cfg(), None);
         assert!(ctx.user.contains("get_artifact"));
         assert!(!ctx.user.contains("xxxxxxxxxx"));
+    }
+
+    #[test]
+    fn system_prompt_includes_available_skills() {
+        let ticket = make_ticket("");
+        let dir = tempdir().unwrap();
+        let mem = open_memory(dir.path());
+        let skill_ctx = SkillContext {
+            available: vec![
+                ("code-review".to_string(), "Reviews code.".to_string()),
+                ("security".to_string(), "Audits security.".to_string()),
+            ],
+            active: vec![],
+        };
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx));
+        assert!(ctx.system.contains("## Available Skills"));
+        assert!(ctx.system.contains("**code-review**"));
+        assert!(ctx.system.contains("**security**"));
+    }
+
+    #[test]
+    fn system_prompt_includes_active_skills_body() {
+        let ticket = make_ticket("");
+        let dir = tempdir().unwrap();
+        let mem = open_memory(dir.path());
+        let skill_ctx = SkillContext {
+            available: vec![("code-review".to_string(), "Reviews code.".to_string())],
+            active: vec![("code-review".to_string(), "Follow these steps to review code.".to_string())],
+        };
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx));
+        assert!(ctx.system.contains("## Active Skills"));
+        assert!(ctx.system.contains("### code-review"));
+        assert!(ctx.system.contains("Follow these steps to review code."));
+    }
+
+    #[test]
+    fn system_prompt_no_skills_sections_when_no_context() {
+        let ticket = make_ticket("");
+        let dir = tempdir().unwrap();
+        let mem = open_memory(dir.path());
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
+        assert!(!ctx.system.contains("## Available Skills"));
+        assert!(!ctx.system.contains("## Active Skills"));
+    }
+
+    #[test]
+    fn system_prompt_no_active_section_when_none_matched() {
+        let ticket = make_ticket("");
+        let dir = tempdir().unwrap();
+        let mem = open_memory(dir.path());
+        let skill_ctx = SkillContext {
+            available: vec![("s".to_string(), "desc".to_string())],
+            active: vec![],
+        };
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx));
+        assert!(ctx.system.contains("## Available Skills"));
+        assert!(!ctx.system.contains("## Active Skills"));
     }
 }

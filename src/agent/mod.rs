@@ -1,5 +1,6 @@
 pub mod config;
 pub mod context;
+pub mod skills;
 pub mod tools;
 
 use std::sync::Arc;
@@ -16,7 +17,8 @@ use crate::logging::Logger;
 use crate::memory::{CompactionStore, MemoryStore};
 
 use config::{LlmClient, build_llm_client};
-use context::build_context;
+use context::{SkillContext, build_context};
+use skills::{match_skills, scan_skills};
 use tools::{ToolContext, dispatch, is_terminal_tool, tool_definitions};
 
 pub async fn run_agent(once: bool, dry_run: bool, config: &AppConfig, logger: Arc<Logger>) -> Result<(), OrgaError> {
@@ -130,13 +132,24 @@ where
         });
     }
 
-    let ctx_msg = build_context(
-        &ticket,
-        &memory_store,
-        artifact_store_opt.as_ref(),
-        llm_cfg,
-        config,
-    );
+    let ctx_msg = {
+        let skill_ctx = config.skills_path().map(|path| {
+            let all = scan_skills(&path, &logger);
+            let matched = match_skills(&all, &ticket.summary, &logger);
+            SkillContext {
+                available: all.iter().map(|s| (s.name.clone(), s.description.clone())).collect(),
+                active: matched.iter().map(|s| (s.name.clone(), s.body.clone())).collect(),
+            }
+        });
+        build_context(
+            &ticket,
+            &memory_store,
+            artifact_store_opt.as_ref(),
+            llm_cfg,
+            config,
+            skill_ctx.as_ref(),
+        )
+    };
 
     let model = client.completion_model(&llm_cfg.model);
     let tools = tool_definitions();
