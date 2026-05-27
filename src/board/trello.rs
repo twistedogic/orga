@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::board::Board;
 use crate::error::OrgaError;
 use crate::logging::Logger;
-use crate::models::{Checklist, ChecklistItem, Column, Comment, Member, Ticket, TicketSummary};
+use crate::models::{Column, Comment, Member, Ticket, TicketSummary};
 
 pub struct TrelloBackend {
     api_key: String,
@@ -154,25 +154,6 @@ impl TrelloBackend {
     }
 
     fn card_to_ticket(&self, card: TrelloCard, list_name: String) -> Result<Ticket, OrgaError> {
-        let checklists: Vec<Checklist> = card
-            .checklists
-            .unwrap_or_default()
-            .into_iter()
-            .map(|cl| Checklist {
-                id: cl.id,
-                name: cl.name,
-                items: cl
-                    .check_items
-                    .into_iter()
-                    .map(|i| ChecklistItem {
-                        id: i.id,
-                        text: i.name,
-                        complete: i.state == "complete",
-                    })
-                    .collect(),
-            })
-            .collect();
-
         let actions = card.actions.unwrap_or_default();
 
         let creator: Option<Member> = actions
@@ -248,7 +229,7 @@ impl TrelloBackend {
                 labels,
             },
             assignees,
-            checklists,
+            sub_tickets: vec![],
             comments,
             comment_compaction: None,
             compaction_suggested: false,
@@ -348,13 +329,26 @@ impl Board for TrelloBackend {
         Ok(())
     }
 
-    fn create_sub(&self, parent_id: &str, title: &str) -> Result<Ticket, OrgaError> {
-        let parent = self.get_ticket(parent_id)?;
+    fn create_sub(&self, parent_id: &str, title: &str, description: Option<&str>, list: Option<&str>) -> Result<Ticket, OrgaError> {
+        let list_id = if let Some(list_name) = list {
+            let columns = self.list_columns()?;
+            columns
+                .into_iter()
+                .find(|c| c.name.eq_ignore_ascii_case(list_name))
+                .map(|c| c.id)
+                .ok_or_else(|| OrgaError::NotFound(format!("list '{list_name}'")))?  
+        } else {
+            let parent = self.get_ticket(parent_id)?;
+            parent.summary.list_id
+        };
         let url = "https://api.trello.com/1/cards";
-        let resp = self.post_form(
-            url,
-            &[("name", title), ("idList", &parent.summary.list_id)],
-        )?;
+        let mut params: Vec<(&str, &str)> = vec![("name", title), ("idList", &list_id)];
+        let desc_owned: String;
+        if let Some(desc) = description {
+            desc_owned = desc.to_string();
+            params.push(("desc", &desc_owned));
+        }
+        let resp = self.post_form(url, &params)?;
         let sub_id = resp["id"]
             .as_str()
             .ok_or_else(|| OrgaError::BackendError("no id in card response".into()))?;
@@ -370,38 +364,12 @@ impl Board for TrelloBackend {
         self.get_ticket(sub_id)
     }
 
-    fn add_checklist_item(&self, id: &str, text: &str) -> Result<String, OrgaError> {
-        let checklist_id = self.get_or_create_checklist(id, "Tasks")?;
-        let url = format!("https://api.trello.com/1/checklists/{checklist_id}/checkItems");
-        let resp = self.post_form(&url, &[("name", text)])?;
-        resp["id"]
-            .as_str()
-            .map(String::from)
-            .ok_or_else(|| OrgaError::BackendError("no id in checkItem response".into()))
-    }
-
     fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
         Ok(self
             .board_lists()?
             .into_iter()
             .map(|l| Column { id: l.id, name: l.name })
             .collect())
-    }
-
-    fn check_item(&self, id: &str, item_id: &str) -> Result<(), OrgaError> {
-        let url = format!("https://api.trello.com/1/cards/{id}/checklists");
-        let lists: Vec<TrelloChecklist> = self.get(&url)?;
-        let checklist_id = lists
-            .iter()
-            .find(|cl| cl.check_items.iter().any(|i| i.id == item_id))
-            .map(|cl| cl.id.clone())
-            .ok_or_else(|| OrgaError::NotFound(format!("checklist item '{item_id}'")))?;
-
-        let url = format!(
-            "https://api.trello.com/1/cards/{id}/checklist/{checklist_id}/checkItem/{item_id}"
-        );
-        self.put_form(&url, &[("state", "complete")])?;
-        Ok(())
     }
 
     fn whoami(&self) -> Result<Member, OrgaError> {

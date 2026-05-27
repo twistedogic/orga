@@ -24,22 +24,48 @@ orga ticket list --json     # get all assigned, non-completed tickets
 Find the first ticket where the latest comment was NOT posted by you. That is the ticket to work this session. If all tickets have your username as the latest commenter, stop — you are waiting for human responses.
 
 ```bash
-orga ticket show --json <id>   # load full ticket: description, comments, checklists
+orga ticket show --json <id>   # load full ticket: description, sub_tickets, comments
 ```
 
 Check `comments[-1].who.username` against your username from `whoami`.
 
-### Comment compaction
+## Decomposing work
 
-If `ticket show` returns `"compaction_suggested": true`, the ticket has more than the configured threshold of comments. Summarize the older discussion yourself and store it before proceeding:
+When a ticket is too broad or has multiple independent deliverables, break it into sub-tickets.
+
+**When to decompose:**
+- The ticket contains multiple independent tasks that can be worked separately
+- Work needs to be tracked at a finer grain than the parent ticket
+- You want to hand off a piece of work to another agent or human
+
+**How to create sub-tickets:**
 
 ```bash
-orga ticket compact <id> --summary "<your prose summary of the discussion so far>"
+orga ticket create-sub <parent_id> "<title>"
+orga ticket create-sub <parent_id> "<title>" --description "<details>"
+orga ticket create-sub <parent_id> "<title>" --list "<column name>"
 ```
 
-Future `ticket show` calls will return `comment_compaction: { summary, compacted_through, compacted_count }` plus only comments after the boundary — keeping context lean.
+- Sub-tickets are **unassigned by default** — the human decides who picks them up
+- `--list` defaults to the parent's current list if omitted
+- After creating, use `--json` to capture the sub-ticket ID(s)
 
+**After creating sub-tickets (always do this):**
 
+1. Comment on the parent ticket summarizing the decomposition:
+   ```bash
+   orga ticket comment <parent_id> "Decomposed into sub-tickets: [#<id1> <title1>], [#<id2> <title2>]"
+   ```
+2. Stop and wait — do not continue working. The human will assign and prioritize the sub-tickets.
+
+**Exploring sub-tickets:**
+
+Sub-tickets appear in `ticket show --json` under the `sub_tickets` field on Linear.
+On Trello, `sub_tickets` is always empty — use the sub-ticket IDs from `create-sub` output.
+
+```bash
+orga ticket show --json <sub_ticket_id>   # load a specific sub-ticket
+```
 
 ## Working a ticket
 
@@ -138,11 +164,8 @@ orga ticket show --json <id>
 orga ticket comment <id> "<text>"
 orga ticket move <id> "<list name>"
 orga ticket return <id> [--comment "<text>"]
-orga ticket compact <id> --summary "<text>"   # store compaction summary
 orga ticket assign <id> <username>
-orga ticket create-sub <parent_id> "<title>"
-orga checklist add <ticket_id> "<text>"
-orga checklist check <ticket_id> <item_id>
+orga ticket create-sub <parent_id> "<title>" [--description "<text>"] [--list "<column name>"]
 orga memory get <ticket_id>
 orga memory set <ticket_id> "<context>"
 orga columns --json
@@ -171,8 +194,6 @@ member_id = "..."
 [memory]          # optional
 path = "/path/to/memory.db"   # default: ~/.orga/memory.db
 
-comment_compaction_threshold = 5   # optional — top-level key; default 5; triggers compaction_suggested hint on ticket show
-
 [artifact]        # optional — required for orga artifact commands
 backend = "git"
 
@@ -184,12 +205,4 @@ ssh_key = "/path/to/key"          # optional: SSH key for auth
 ssh_passphrase = "..."            # optional
 http_username = "..."             # optional: HTTP basic auth
 http_password = "..."             # optional
-
-[[workflow]]      # optional — repeat for each column
-column = "To Do"
-prompt = "Enter explore mode. Think deeply before acting."
-
-[[workflow]]
-column = "In Progress"
-prompt_file = "~/.orga/prompts/in-progress.md"   # path to a file containing the prompt
 ```

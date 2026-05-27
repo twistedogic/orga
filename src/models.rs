@@ -37,20 +37,6 @@ pub struct Member {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChecklistItem {
-    pub id: String,
-    pub text: String,
-    pub complete: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Checklist {
-    pub id: String,
-    pub name: String,
-    pub items: Vec<ChecklistItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Comment {
     pub id: String,
     pub at: DateTime<Utc>,
@@ -79,7 +65,7 @@ pub struct Ticket {
     #[serde(flatten)]
     pub summary: TicketSummary,
     pub assignees: Vec<Member>,
-    pub checklists: Vec<Checklist>,
+    pub sub_tickets: Vec<TicketSummary>,
     pub comments: Vec<Comment>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comment_compaction: Option<CommentCompaction>,

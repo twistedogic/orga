@@ -40,8 +40,6 @@ enum Commands {
     Init,
     #[command(subcommand, about = "Manage tickets on the board")]
     Ticket(TicketCommands),
-    #[command(subcommand, about = "Manage checklist items on a ticket")]
-    Checklist(ChecklistCommands),
     #[command(subcommand, about = "Read and write per-ticket memory")]
     Memory(MemoryCommands),
     #[command(about = "List all columns on the board")]
@@ -100,6 +98,10 @@ enum TicketCommands {
         parent_id: String,
         #[arg(help = "Title of the new sub-ticket")]
         title: String,
+        #[arg(long, help = "Description for the sub-ticket")]
+        description: Option<String>,
+        #[arg(long, help = "List/column name to place the sub-ticket in (defaults to parent's list)")]
+        list: Option<String>,
     },
     #[command(about = "Return a ticket to its creator, with an optional comment")]
     Return {
@@ -122,23 +124,6 @@ enum TicketCommands {
     },
 }
 
-#[derive(Subcommand)]
-enum ChecklistCommands {
-    #[command(about = "Add a checklist item to a ticket")]
-    Add {
-        #[arg(help = "Ticket ID")]
-        ticket_id: String,
-        #[arg(help = "Checklist item text")]
-        text: String,
-    },
-    #[command(about = "Mark a checklist item as complete")]
-    Check {
-        #[arg(help = "Ticket ID")]
-        ticket_id: String,
-        #[arg(help = "Checklist item ID")]
-        item_id: String,
-    },
-}
 
 #[derive(Subcommand)]
 enum MemoryCommands {
@@ -358,8 +343,8 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                         println!("moved {id} to '{list}'");
                     }
                 }
-                TicketCommands::CreateSub { parent_id, title } => {
-                    let sub = board.create_sub(&parent_id, &title)?;
+                TicketCommands::CreateSub { parent_id, title, description, list } => {
+                    let sub = board.create_sub(&parent_id, &title, description.as_deref(), list.as_deref())?;;
                     if cli.json {
                         println!(
                             "{}",
@@ -405,27 +390,6 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                         println!("{}", json!({"ok": true}));
                     } else {
                         println!("compaction record deleted for {id}");
-                    }
-                }
-            }
-        }
-        Commands::Checklist(cmd) => {
-            let board = build_board(&config, Arc::clone(&logger))?;
-            match cmd {
-                ChecklistCommands::Add { ticket_id, text } => {
-                    let item_id = board.add_checklist_item(&ticket_id, &text)?;
-                    if cli.json {
-                        println!("{}", json!({"ok": true, "item_id": item_id}));
-                    } else {
-                        println!("checklist item added (id: {item_id})");
-                    }
-                }
-                ChecklistCommands::Check { ticket_id, item_id } => {
-                    board.check_item(&ticket_id, &item_id)?;
-                    if cli.json {
-                        println!("{}", json!({"ok": true}));
-                    } else {
-                        println!("item {item_id} marked complete on {ticket_id}");
                     }
                 }
             }
@@ -553,14 +517,11 @@ fn print_ticket_detail(t: &Ticket) {
     if !t.summary.description.is_empty() {
         println!("\n## Description\n{}", t.summary.description);
     }
-    if !t.checklists.is_empty() {
-        println!("\n## Checklists");
-        for cl in &t.checklists {
-            println!("  {}", cl.name);
-            for item in &cl.items {
-                let mark = if item.complete { "x" } else { " " };
-                println!("    [{}] {} ({})", mark, item.text, item.id);
-            }
+    if !t.sub_tickets.is_empty() {
+        println!("\n## Sub-tickets");
+        for sub in &t.sub_tickets {
+            let mark = if sub.completed { "x" } else { " " };
+            println!("  [{}] {} ({}) {}", mark, sub.title, sub.id, sub.url);
         }
     }
     if !t.comments.is_empty() || t.comment_compaction.is_some() || t.compaction_suggested {

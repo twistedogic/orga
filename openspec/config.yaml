@@ -5,8 +5,8 @@ context: |
 
   Purpose: A CLI tool that LLM agents invoke as a skill to interact with shared kanban boards.
   The agent is a first-class board member alongside human teammates. Instead of a chat interface,
-  the agent communicates via ticket comments, creates sub-tickets, manages checklists, and moves
-  tickets through the board.
+  the agent communicates via ticket comments, creates sub-tickets, and moves tickets through the board.
+  The agent skill lives at skills/orga/SKILL.md.
 
   Tech stack:
   - Language: Rust (edition 2024)
@@ -26,7 +26,7 @@ context: |
 
   Key constraints:
   - CLI is stateless between invocations — the invoking agent skill handles scheduling
-  - Agent permissions: comment, assign, move, create sub-tickets, manage checklists — never close tickets
+  - Agent permissions: comment, assign, move, create sub-tickets — never close tickets
   - All read commands support `--json` flag for machine-readable output
   - Errors with `--json` produce `{"error": "<message>"}` to stderr with non-zero exit code
   - Memory is private to the agent (local), not shared on the board
@@ -35,7 +35,7 @@ context: |
   Module layout:
   - src/lib.rs — public module exports
   - src/main.rs — clap command structure and dispatch
-  - src/models.rs — Ticket, Comment, Checklist, ChecklistItem, Member
+  - src/models.rs — Ticket, TicketSummary, Comment, Member
   - src/error.rs — OrgaError enum
   - src/config.rs — AppConfig and loading logic
   - src/board/mod.rs — Board trait and build_board factory

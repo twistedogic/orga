@@ -38,8 +38,6 @@ pub async fn dispatch(tool_name: &str, args: &str, ctx: &ToolContext) -> String 
         "move_ticket" => dispatch_move_ticket(args, ctx).await,
         "assign" => dispatch_assign(args, ctx).await,
         "create_sub" => dispatch_create_sub(args, ctx).await,
-        "add_checklist_item" => dispatch_add_checklist_item(args, ctx).await,
-        "check_item" => dispatch_check_item(args, ctx).await,
         "set_memory" => dispatch_set_memory(args, ctx).await,
         "commit_artifact" => dispatch_commit_artifact(args, ctx).await,
         "get_artifact" => dispatch_get_artifact(args, ctx).await,
@@ -117,6 +115,8 @@ async fn dispatch_assign(args: &str, ctx: &ToolContext) -> String {
 #[derive(Deserialize)]
 struct CreateSubArgs {
     title: String,
+    description: Option<String>,
+    list: Option<String>,
 }
 
 async fn dispatch_create_sub(args: &str, ctx: &ToolContext) -> String {
@@ -128,48 +128,8 @@ async fn dispatch_create_sub(args: &str, ctx: &ToolContext) -> String {
     if ctx.dry_run {
         return dry_run_msg(&format!("create sub-ticket '{}' under {}", parsed.title, ctx.ticket_id));
     }
-    match ctx.board.create_sub(&ctx.ticket_id, &parsed.title) {
+    match ctx.board.create_sub(&ctx.ticket_id, &parsed.title, parsed.description.as_deref(), parsed.list.as_deref()) {
         Ok(sub) => format!("created sub-ticket: {} ({})", sub.summary.title, sub.summary.url),
-        Err(e) => format!("error: {e}"),
-    }
-}
-
-#[derive(Deserialize)]
-struct AddChecklistItemArgs {
-    text: String,
-}
-
-async fn dispatch_add_checklist_item(args: &str, ctx: &ToolContext) -> String {
-    let parsed: AddChecklistItemArgs = match serde_json::from_str(args) {
-        Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
-    };
-    log_action!(ctx, ctx.dry_run, format!("add checklist item to {}: {:?}", ctx.ticket_id, parsed.text));
-    if ctx.dry_run {
-        return dry_run_msg(&format!("add checklist item to {}", ctx.ticket_id));
-    }
-    match ctx.board.add_checklist_item(&ctx.ticket_id, &parsed.text) {
-        Ok(id) => format!("checklist item added (id: {id})"),
-        Err(e) => format!("error: {e}"),
-    }
-}
-
-#[derive(Deserialize)]
-struct CheckItemArgs {
-    item_id: String,
-}
-
-async fn dispatch_check_item(args: &str, ctx: &ToolContext) -> String {
-    let parsed: CheckItemArgs = match serde_json::from_str(args) {
-        Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
-    };
-    log_action!(ctx, ctx.dry_run, format!("check item {} on {}", parsed.item_id, ctx.ticket_id));
-    if ctx.dry_run {
-        return dry_run_msg(&format!("check item {} on {}", parsed.item_id, ctx.ticket_id));
-    }
-    match ctx.board.check_item(&ctx.ticket_id, &parsed.item_id) {
-        Ok(()) => format!("item {} marked complete", parsed.item_id),
         Err(e) => format!("error: {e}"),
     }
 }
@@ -323,31 +283,11 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "title": { "type": "string", "description": "Title of the new sub-ticket" }
+                    "title": { "type": "string", "description": "Title of the new sub-ticket" },
+                    "description": { "type": "string", "description": "Optional description for the sub-ticket" },
+                    "list": { "type": "string", "description": "Optional list/column name (defaults to parent's list)" }
                 },
                 "required": ["title"]
-            }),
-        },
-        ToolDefinition {
-            name: "add_checklist_item".to_string(),
-            description: "Add an item to the ticket's checklist.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "text": { "type": "string", "description": "Checklist item text" }
-                },
-                "required": ["text"]
-            }),
-        },
-        ToolDefinition {
-            name: "check_item".to_string(),
-            description: "Mark a checklist item as complete.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "item_id": { "type": "string", "description": "The checklist item ID" }
-                },
-                "required": ["item_id"]
             }),
         },
         ToolDefinition {
@@ -447,11 +387,9 @@ mod tests {
         }
         fn assign(&self, _id: &str, _username: &str) -> Result<(), OrgaError> { Ok(()) }
         fn move_ticket(&self, _id: &str, _list: &str) -> Result<(), OrgaError> { Ok(()) }
-        fn create_sub(&self, _parent_id: &str, title: &str) -> Result<crate::models::Ticket, OrgaError> {
+        fn create_sub(&self, _parent_id: &str, title: &str, _description: Option<&str>, _list: Option<&str>) -> Result<crate::models::Ticket, OrgaError> {
             Err(OrgaError::NotFound(format!("mock: {title}")))
         }
-        fn add_checklist_item(&self, _id: &str, _text: &str) -> Result<String, OrgaError> { Ok("item-1".into()) }
-        fn check_item(&self, _id: &str, _item_id: &str) -> Result<(), OrgaError> { Ok(()) }
         fn list_columns(&self) -> Result<Vec<crate::models::Column>, OrgaError> { Ok(vec![]) }
         fn whoami(&self) -> Result<crate::models::Member, OrgaError> {
             Err(OrgaError::NotFound("mock".into()))

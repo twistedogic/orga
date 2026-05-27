@@ -35,15 +35,15 @@ The CLI SHALL provide `orga ticket list` to output all tickets currently assigne
 - **THEN** the command exits with a non-zero code and prints a usage error
 
 ### Requirement: Ticket show command
-The CLI SHALL provide `orga ticket show <id>` to output the full context of a ticket: title, description, current list, creator, assignees, checklist items, and all comments in chronological order. If the ticket's current column matches a `[[workflow]]` entry in config, the resolved prompt text SHALL be included in the output.
+The CLI SHALL provide `orga ticket show <id>` to output the full context of a ticket: title, description, current list, creator, assignees, sub-tickets, and all comments in chronological order. If the ticket's current column matches a `[[workflow]]` entry in config, the resolved prompt text SHALL be included in the output.
 
 #### Scenario: Ticket exists
 - **WHEN** a valid ticket ID is provided
-- **THEN** full ticket context is printed including creator (if known), all comments and checklist items
+- **THEN** full ticket context is printed including creator (if known), all comments and sub-tickets
 
 #### Scenario: JSON output
 - **WHEN** `--json` flag is passed
-- **THEN** output is a JSON object with fields: `id`, `title`, `description`, `list`, `creator`, `assignees`, `checklists`, `comments`
+- **THEN** output is a JSON object with fields: `id`, `title`, `description`, `list`, `creator`, `assignees`, `sub_tickets`, `comments`
 
 #### Scenario: JSON output with workflow prompt
 - **WHEN** `--json` flag is passed and the ticket's column has a matching workflow entry
@@ -103,33 +103,27 @@ The CLI SHALL provide `orga ticket move <id> <list>` to move a ticket to a diffe
 - **THEN** the command exits with a non-zero code and prints an error to stderr
 
 ### Requirement: Ticket create-sub command
-The CLI SHALL provide `orga ticket create-sub <parent-id> <title>` to create a sub-ticket linked to a parent ticket.
+The CLI SHALL provide `orga ticket create-sub <parent-id> <title> [--description <text>] [--list <column-name>]` to create a sub-ticket linked to a parent ticket. The sub-ticket SHALL be created unassigned. If `--list` is omitted, the sub-ticket SHALL be placed in the same list as the parent. If `--list` is provided, the CLI SHALL error if no list with that name exists.
 
 #### Scenario: Sub-ticket created
 - **WHEN** a valid parent ticket ID and title are provided
-- **THEN** a new ticket is created on the same board, linked to the parent, and its ID and URL are printed
+- **THEN** a new ticket is created on the same board, linked to the parent, unassigned, in the parent's list, and its ID and URL are printed
+
+#### Scenario: Sub-ticket created with description
+- **WHEN** `--description <text>` is provided
+- **THEN** the sub-ticket is created with the given description
+
+#### Scenario: Sub-ticket created with explicit list
+- **WHEN** `--list <column-name>` is provided and that column exists
+- **THEN** the sub-ticket is placed in that list instead of the parent's list
+
+#### Scenario: List not found
+- **WHEN** `--list <column-name>` is provided and no column with that name exists
+- **THEN** the command exits with a non-zero code and prints an error naming the missing list
 
 #### Scenario: JSON output
 - **WHEN** `--json` flag is passed
 - **THEN** output is a JSON object with the new ticket's `id`, `title`, and `url`
-
-### Requirement: Checklist add command
-The CLI SHALL provide `orga checklist add <ticket-id> <item-text>` to add a checklist item to a ticket.
-
-#### Scenario: Item added
-- **WHEN** a valid ticket ID and item text are provided
-- **THEN** the checklist item is added and a success message with the item ID is printed
-
-### Requirement: Checklist check command
-The CLI SHALL provide `orga checklist check <ticket-id> <item-id>` to mark a checklist item as complete.
-
-#### Scenario: Item checked
-- **WHEN** a valid ticket ID and item ID are provided
-- **THEN** the checklist item is marked complete and a success message is printed
-
-#### Scenario: Item not found
-- **WHEN** the item ID does not exist on the ticket
-- **THEN** the command exits with a non-zero code and prints an error to stderr
 
 ### Requirement: Global --json flag
 All read commands SHALL support a `--json` flag that switches output to machine-readable JSON. Write commands SHALL output a plain success line or a JSON `{"ok": true}` object when `--json` is passed.

@@ -95,14 +95,11 @@ fn build_user_message(
         parts.push(format!("\n## Description\n{}", ticket.summary.description));
     }
 
-    if !ticket.checklists.is_empty() {
-        parts.push("\n## Checklists".to_string());
-        for cl in &ticket.checklists {
-            parts.push(format!("### {}", cl.name));
-            for item in &cl.items {
-                let mark = if item.complete { "[x]" } else { "[ ]" };
-                parts.push(format!("- {} {} (id: {})", mark, item.text, item.id));
-            }
+    if !ticket.sub_tickets.is_empty() {
+        parts.push("\n## Sub-tickets".to_string());
+        for sub in &ticket.sub_tickets {
+            let mark = if sub.completed { "[x]" } else { "[ ]" };
+            parts.push(format!("- {} {} (id: {}) {}", mark, sub.title, sub.id, sub.url));
         }
     }
 
@@ -202,7 +199,7 @@ mod tests {
                 labels: vec![],
             },
             assignees: vec![],
-            checklists: vec![],
+            sub_tickets: vec![],
             comments: vec![],
             comment_compaction: None,
             compaction_suggested: false,

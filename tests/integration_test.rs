@@ -7,7 +7,7 @@ use orga::artifact::git::{GitArtifactStore, GitAuth};
 use orga::board::Board;
 use orga::error::OrgaError;
 use orga::logging::Logger;
-use orga::models::{Checklist, Column, Comment, Member, Ticket, TicketSummary};
+use orga::models::{Column, Comment, Member, Ticket, TicketSummary};
 
 struct MockBoard {
     tickets: Vec<Ticket>,
@@ -55,7 +55,7 @@ impl Board for MockBoard {
         Ok(())
     }
 
-    fn create_sub(&self, parent_id: &str, title: &str) -> Result<Ticket, OrgaError> {
+    fn create_sub(&self, parent_id: &str, title: &str, _description: Option<&str>, _list: Option<&str>) -> Result<Ticket, OrgaError> {
         let _parent = self.get_ticket(parent_id)?;
         Ok(Ticket {
             summary: TicketSummary {
@@ -71,22 +71,11 @@ impl Board for MockBoard {
                 labels: vec![],
             },
             assignees: vec![],
-            checklists: vec![],
+            sub_tickets: vec![],
             comments: vec![],
             comment_compaction: None,
             compaction_suggested: false,
         })
-    }
-
-    fn add_checklist_item(&self, _id: &str, _text: &str) -> Result<String, OrgaError> {
-        Ok("item-1".into())
-    }
-
-    fn check_item(&self, _id: &str, item_id: &str) -> Result<(), OrgaError> {
-        if item_id == "missing" {
-            return Err(OrgaError::NotFound(item_id.to_string()));
-        }
-        Ok(())
     }
 
     fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
@@ -138,11 +127,7 @@ fn sample_ticket() -> Ticket {
             username: "agent-1".into(),
             full_name: "Agent One".into(),
         }],
-        checklists: vec![Checklist {
-            id: "cl1".into(),
-            name: "Tasks".into(),
-            items: vec![],
-        }],
+        sub_tickets: vec![],
         comments: vec![Comment {
             id: "c1".into(),
             at: Utc::now(),
@@ -170,7 +155,7 @@ fn ticket_no_creator() -> Ticket {
             labels: vec![],
         },
         assignees: vec![],
-        checklists: vec![],
+        sub_tickets: vec![],
         comments: vec![],
         comment_compaction: None,
         compaction_suggested: false,
@@ -217,23 +202,9 @@ fn comment_empty_fails() {
 #[test]
 fn create_sub_links_to_parent() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    let sub = board.create_sub("abc123", "Sub-task one").unwrap();
+    let sub = board.create_sub("abc123", "Sub-task one", None, None).unwrap();
     assert_eq!(sub.summary.title, "Sub-task one");
     assert_eq!(sub.summary.list_id, "list-1");
-}
-
-#[test]
-fn add_checklist_item_returns_id() {
-    let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    let id = board.add_checklist_item("abc123", "step 1").unwrap();
-    assert!(!id.is_empty());
-}
-
-#[test]
-fn check_item_missing_errors() {
-    let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    let err = board.check_item("abc123", "missing").unwrap_err();
-    assert!(matches!(err, OrgaError::NotFound(_)));
 }
 
 #[test]
@@ -245,7 +216,7 @@ fn ticket_json_serializable() {
     assert_eq!(parsed["title"], "Fix login bug");
     assert_eq!(parsed["completed"], false);
     assert!(parsed["comments"].is_array());
-    assert!(parsed["checklists"].is_array());
+    assert!(parsed["sub_tickets"].is_array());
 }
 
 #[test]
@@ -256,7 +227,7 @@ fn ticket_summary_json_has_no_detail_fields() {
     assert_eq!(parsed["id"], "abc123");
     assert_eq!(parsed["title"], "Fix login bug");
     assert!(parsed.get("comments").is_none());
-    assert!(parsed.get("checklists").is_none());
+    assert!(parsed.get("sub_tickets").is_none());
     assert!(parsed.get("assignees").is_none());
 }
 
@@ -275,7 +246,7 @@ fn completed_ticket() -> Ticket {
             labels: vec![],
         },
         assignees: vec![],
-        checklists: vec![],
+        sub_tickets: vec![],
         comments: vec![],
         comment_compaction: None,
         compaction_suggested: false,
@@ -485,9 +456,9 @@ mod live {
         println!("  state: {} ({})", ticket.summary.list_name, ticket.summary.list_id);
         println!("  assignees: {}", ticket.assignees.iter().map(|m| m.username.as_str()).collect::<Vec<_>>().join(", "));
         println!("  comments: {}", ticket.comments.len());
-        println!("  checklists: {}", ticket.checklists.len());
-        for cl in &ticket.checklists {
-            println!("    [{}] {} items", cl.name, cl.items.len());
+        println!("  sub_tickets: {}", ticket.sub_tickets.len());
+        for sub in &ticket.sub_tickets {
+            println!("    [ ] {} ({})", sub.title, sub.id);
         }
     }
 

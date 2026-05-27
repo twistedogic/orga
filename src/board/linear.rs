@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::board::Board;
 use crate::error::OrgaError;
 use crate::logging::Logger;
-use crate::models::{Checklist, ChecklistItem, Column, Comment, Member, Ticket, TicketSummary};
+use crate::models::{Column, Comment, Member, Ticket, TicketSummary};
 
 pub struct LinearBackend {
     api_key: String,
@@ -165,29 +165,32 @@ impl LinearBackend {
     }
 
     fn linear_issue_to_ticket(&self, issue: LinearIssue) -> Ticket {
-        let sub_checklist = if issue.children.nodes.is_empty() {
-            vec![]
-        } else {
-            let items: Vec<ChecklistItem> = issue
-                .children
-                .nodes
-                .iter()
-                .map(|child| ChecklistItem {
-                    id: child.id.clone(),
-                    text: child.title.clone(),
-                    complete: child
-                        .state
-                        .as_ref()
-                        .map(|s| s.state_type.as_deref() == Some("completed"))
-                        .unwrap_or(false),
-                })
-                .collect();
-            vec![Checklist {
-                id: "sub-issues".into(),
-                name: "Sub-tasks".into(),
-                items,
-            }]
-        };
+        let sub_tickets: Vec<TicketSummary> = issue
+            .children
+            .nodes
+            .into_iter()
+            .map(|child| {
+                let completed = child
+                    .state
+                    .as_ref()
+                    .map(|s| s.state_type.as_deref() == Some("completed") || s.state_type.as_deref() == Some("cancelled"))
+                    .unwrap_or(false);
+                let list_name = child.state.as_ref().map(|s| s.name.clone()).unwrap_or_default();
+                let list_id = child.state.as_ref().map(|s| s.id.clone()).unwrap_or_default();
+                TicketSummary {
+                    id: child.id,
+                    title: child.title,
+                    description: String::new(),
+                    list_id,
+                    list_name,
+                    url: child.url,
+                    completed,
+                    creator: None,
+                    last_commenter_is_agent: false,
+                    labels: vec![],
+                }
+            })
+            .collect();
 
         let mut comments: Vec<Comment> = issue
             .comments
@@ -261,7 +264,7 @@ impl LinearBackend {
                 labels,
             },
             assignees,
-            checklists: sub_checklist,
+            sub_tickets,
             comments,
             comment_compaction: None,
             compaction_suggested: false,
@@ -356,7 +359,7 @@ impl Board for LinearBackend {
             issue: LinearIssue,
         }
         let query = format!(
-            "{{ issue(id: \"{id}\") {{ id title description url state {{ id name type }} creator {{ id displayName }} assignee {{ id displayName }} comments {{ nodes {{ id body createdAt user {{ id displayName }} }} }} children {{ nodes {{ id title state {{ id name type }} }} }} labels {{ nodes {{ name }} }} }} }}"
+            "{{ issue(id: \"{id}\") {{ id title description url state {{ id name type }} creator {{ id displayName }} assignee {{ id displayName }} comments {{ nodes {{ id body createdAt user {{ id displayName }} }} }} children {{ nodes {{ id title url state {{ id name type }} }} }} labels {{ nodes {{ name }} }} }} }}"
         );
         let resp: Resp = self.gql(&query, serde_json::json!({}))?;
         Ok(self.linear_issue_to_ticket(resp.issue))
@@ -404,35 +407,20 @@ impl Board for LinearBackend {
         Ok(())
     }
 
-    fn create_sub(&self, parent_id: &str, title: &str) -> Result<Ticket, OrgaError> {
-        let sub_id = self.create_sub_issue(parent_id, title)?;
+    fn create_sub(&self, parent_id: &str, title: &str, description: Option<&str>, list: Option<&str>) -> Result<Ticket, OrgaError> {
+        let state_id = if let Some(list_name) = list {
+            let states = self.team_states()?;
+            states
+                .into_iter()
+                .find(|s| s.name.eq_ignore_ascii_case(list_name))
+                .map(|s| s.id)
+                .ok_or_else(|| OrgaError::NotFound(format!("list '{list_name}'")))?  
+        } else {
+            let parent = self.get_ticket(parent_id)?;
+            parent.summary.list_id
+        };
+        let sub_id = self.create_sub_issue(parent_id, title, description, &state_id)?;
         self.get_ticket(&sub_id)
-    }
-
-    fn add_checklist_item(&self, id: &str, text: &str) -> Result<String, OrgaError> {
-        self.create_sub_issue(id, text)
-    }
-
-    fn check_item(&self, _ticket_id: &str, item_id: &str) -> Result<(), OrgaError> {
-        let states = self.team_states()?;
-        let completed_state = states
-            .into_iter()
-            .find(|s| s.state_type.as_deref() == Some("completed"))
-            .ok_or_else(|| {
-                OrgaError::BackendError(
-                    "team has no completed workflow state; cannot check item".into(),
-                )
-            })?;
-        #[derive(Deserialize)]
-        #[allow(dead_code)]
-        struct Resp {
-            #[serde(rename = "issueUpdate")]
-            issue_update: SuccessResp,
-        }
-        let cid = &completed_state.id;
-        let query = format!("mutation {{ issueUpdate(id: \"{item_id}\", input: {{ stateId: \"{cid}\" }}) {{ success }} }}");
-        let _: Resp = self.gql(&query, serde_json::json!({}))?;
-        Ok(())
     }
 
     fn return_ticket(&self, id: &str, comment: Option<&str>) -> Result<(), OrgaError> {
@@ -449,7 +437,7 @@ impl Board for LinearBackend {
 }
 
 impl LinearBackend {
-    fn create_sub_issue(&self, parent_id: &str, title: &str) -> Result<String, OrgaError> {
+    fn create_sub_issue(&self, parent_id: &str, title: &str, description: Option<&str>, state_id: &str) -> Result<String, OrgaError> {
         #[derive(Deserialize)]
         struct Resp {
             #[serde(rename = "issueCreate")]
@@ -464,8 +452,14 @@ impl LinearBackend {
             id: String,
         }
         let tid = &self.team_id;
-        let query = format!("mutation($title: String!) {{ issueCreate(input: {{ teamId: \"{tid}\", parentId: \"{parent_id}\", title: $title }}) {{ issue {{ id }} }} }}");
-        let resp: Resp = self.gql(&query, serde_json::json!({ "title": title }))?;
+        let desc_field = if description.is_some() { ", description: $description" } else { "" };
+        let query = format!("mutation($title: String!{}) {{ issueCreate(input: {{ teamId: \"{tid}\", parentId: \"{parent_id}\", stateId: \"{state_id}\", title: $title{desc_field} }}) {{ issue {{ id }} }} }}",
+            if description.is_some() { ", $description: String" } else { "" });
+        let mut vars = serde_json::json!({ "title": title });
+        if let Some(desc) = description {
+            vars["description"] = serde_json::Value::String(desc.to_string());
+        }
+        let resp: Resp = self.gql(&query, vars)?;
         Ok(resp.issue_create.issue.id)
     }
 }
@@ -530,6 +524,7 @@ struct LinearCommentSummary {
 struct LinearChildIssue {
     id: String,
     title: String,
+    url: String,
     state: Option<LinearState>,
 }
 
@@ -689,34 +684,36 @@ mod tests {
     }
 
     #[test]
-    fn get_ticket_maps_sub_issues_to_checklist() {
+    fn get_ticket_maps_sub_issues_to_sub_tickets() {
         let backend = make_backend();
         let issue = make_full_issue(vec![
             LinearChildIssue {
                 id: "sub-1".into(),
                 title: "Fix bug".into(),
+                url: "https://linear.app/sub-1".into(),
                 state: Some(LinearState { id: "s1".into(), name: "Done".into(), state_type: Some("completed".into()) }),
             },
             LinearChildIssue {
                 id: "sub-2".into(),
                 title: "Write test".into(),
+                url: "https://linear.app/sub-2".into(),
                 state: Some(LinearState { id: "s2".into(), name: "Todo".into(), state_type: Some("unstarted".into()) }),
             },
         ]);
         let ticket = backend.linear_issue_to_ticket(issue);
-        assert_eq!(ticket.checklists.len(), 1);
-        let cl = &ticket.checklists[0];
-        assert_eq!(cl.name, "Sub-tasks");
-        assert_eq!(cl.items.len(), 2);
-        assert!(cl.items[0].complete);
-        assert!(!cl.items[1].complete);
+        assert_eq!(ticket.sub_tickets.len(), 2);
+        assert_eq!(ticket.sub_tickets[0].title, "Fix bug");
+        assert!(ticket.sub_tickets[0].completed);
+        assert_eq!(ticket.sub_tickets[0].url, "https://linear.app/sub-1");
+        assert_eq!(ticket.sub_tickets[1].title, "Write test");
+        assert!(!ticket.sub_tickets[1].completed);
     }
 
     #[test]
-    fn get_ticket_no_sub_issues_empty_checklists() {
+    fn get_ticket_no_sub_issues_empty_sub_tickets() {
         let backend = make_backend();
         let issue = make_full_issue(vec![]);
         let ticket = backend.linear_issue_to_ticket(issue);
-        assert!(ticket.checklists.is_empty());
+        assert!(ticket.sub_tickets.is_empty());
     }
 }

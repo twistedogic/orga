@@ -15,7 +15,7 @@ The system SHALL define a `Board` trait that all backend adapters must implement
 - **THEN** the CLI exits with a non-zero code and prints an error listing supported backends: `trello`, `linear`
 
 ### Requirement: Ticket data model
-The `Board` trait SHALL operate on a shared `Ticket` type that is backend-agnostic. The `Ticket` type SHALL include: `id`, `title`, `description`, `list_id`, `list_name`, `url`, `completed` (bool), `assignees` (Vec of usernames), `checklists` (Vec of checklist with items), and `comments` (Vec of Comment). The `completed` field SHALL be `true` when the ticket is closed/archived on the backend.
+The `Board` trait SHALL operate on a shared `Ticket` type that is backend-agnostic. The `Ticket` type SHALL include: `id`, `title`, `description`, `list_id`, `list_name`, `url`, `completed` (bool), `assignees` (Vec of Members), `sub_tickets` (Vec of TicketSummary), and `comments` (Vec of Comment). The `completed` field SHALL be `true` when the ticket is closed/archived on the backend. The `Checklist` and `ChecklistItem` types are removed.
 
 #### Scenario: Ticket serialization
 - **WHEN** a ticket is returned from any backend
@@ -28,6 +28,10 @@ The `Board` trait SHALL operate on a shared `Ticket` type that is backend-agnost
 #### Scenario: Open ticket serialization
 - **WHEN** an open ticket is returned from any backend
 - **THEN** its JSON representation includes `"completed": false`
+
+#### Scenario: sub_tickets always present
+- **WHEN** a ticket is serialized to JSON
+- **THEN** `sub_tickets` is always present as an array (empty if none)
 
 ### Requirement: Error handling
 The `Board` trait methods SHALL return `Result<T, OrgaError>` where `OrgaError` is a shared error type covering: not found, unauthorized, rate limited, network failure, and backend-specific errors (wrapped).
