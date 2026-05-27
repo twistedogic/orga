@@ -260,12 +260,10 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                             obj["message"] = serde_json::json!(msg);
                         }
                         println!("{}", serde_json::to_string_pretty(&obj).unwrap());
+                    } else if let Some(msg) = empty_message {
+                        println!("{}", msg);
                     } else {
-                        if let Some(msg) = empty_message {
-                            println!("{}", msg);
-                        } else {
-                            print_ticket_summary_list(&tickets);
-                        }
+                        print_ticket_summary_list(&tickets);
                     }
                 }
                 TicketCommands::Show { id } => {
@@ -344,7 +342,7 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                     }
                 }
                 TicketCommands::CreateSub { parent_id, title, description, list } => {
-                    let sub = board.create_sub(&parent_id, &title, description.as_deref(), list.as_deref())?;;
+                    let sub = board.create_sub(&parent_id, &title, description.as_deref(), list.as_deref())?;
                     if cli.json {
                         println!(
                             "{}",
@@ -413,10 +411,8 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                             Some(e) => println!("{}", serde_json::to_string_pretty(&e).unwrap()),
                             None => println!("{}", json!({"ticket_id": ticket_id, "context": null})),
                         }
-                    } else {
-                        if let Some(e) = entry {
-                            println!("{}", e.context);
-                        }
+                    } else if let Some(e) = entry {
+                        println!("{}", e.context);
                     }
                 }
             }

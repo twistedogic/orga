@@ -16,7 +16,7 @@ pub struct TicketContext {
 pub fn build_context(
     ticket: &Ticket,
     memory_store: &MemoryStore,
-    artifact_store: Option<&Box<dyn ArtifactStore>>,
+    artifact_store: Option<&dyn ArtifactStore>,
     llm_cfg: &LlmConfig,
     app_cfg: &AppConfig,
     skill_ctx: Option<&SkillContext>,
@@ -42,29 +42,27 @@ Use `skip()` if the ticket is not actionable right now.",
         app_cfg.agent.name
     ));
 
-    if let Some(ctx) = skill_ctx {
-        if !ctx.available.is_empty() {
+    if let Some(ctx) = skill_ctx
+        && !ctx.available.is_empty() {
             let mut section = "\n## Available Skills".to_string();
             for (name, desc) in &ctx.available {
                 section.push_str(&format!("\n- **{name}**: {desc}"));
             }
             parts.push(section);
         }
-    }
 
     if let Some(prompt) = app_cfg.workflow_prompt(&ticket.summary.list_name) {
         parts.push(format!("\n## Column Instructions\n{}", prompt));
     }
 
-    if let Some(ctx) = skill_ctx {
-        if !ctx.active.is_empty() {
+    if let Some(ctx) = skill_ctx
+        && !ctx.active.is_empty() {
             let mut section = "\n## Active Skills".to_string();
             for (name, body) in &ctx.active {
                 section.push_str(&format!("\n### {name}\n{body}"));
             }
             parts.push(section);
         }
-    }
 
     parts.join("\n")
 }
@@ -72,7 +70,7 @@ Use `skip()` if the ticket is not actionable right now.",
 fn build_user_message(
     ticket: &Ticket,
     memory_store: &MemoryStore,
-    artifact_store: Option<&Box<dyn ArtifactStore>>,
+    artifact_store: Option<&dyn ArtifactStore>,
     llm_cfg: &LlmConfig,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -130,9 +128,9 @@ fn build_user_message(
         parts.push(format!("\n## Agent Memory (private)\n{}", mem.context));
     }
 
-    if let Some(store) = artifact_store {
-        if let Ok(metas) = store.list(&ticket.summary.id) {
-            if !metas.is_empty() {
+    if let Some(store) = artifact_store
+        && let Ok(metas) = store.list(&ticket.summary.id)
+            && !metas.is_empty() {
                 parts.push("\n## Artifacts".to_string());
                 let cap = llm_cfg.max_artifact_inline_bytes();
                 for meta in &metas {
@@ -168,8 +166,6 @@ fn build_user_message(
                     }
                 }
             }
-        }
-    }
 
     parts.join("\n")
 }

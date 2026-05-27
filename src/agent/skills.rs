@@ -85,25 +85,25 @@ fn parse_skill(content: &str) -> Option<SkillMeta> {
             continue;
         }
         if in_metadata {
-            if line.starts_with("orga-match-always:") {
-                let val = line["orga-match-always:".len()..].trim().trim_matches('"');
+            if let Some(stripped) = line.strip_prefix("orga-match-always:") {
+                let val = stripped.trim().trim_matches('"');
                 match_always = val == "true";
-            } else if line.starts_with("orga-match-column:") {
-                let val = line["orga-match-column:".len()..].trim().trim_matches('"');
+            } else if let Some(stripped) = line.strip_prefix("orga-match-column:") {
+                let val = stripped.trim().trim_matches('"');
                 match_column = Some(val.to_string());
-            } else if line.starts_with("orga-match-label:") {
-                let val = line["orga-match-label:".len()..].trim().trim_matches('"');
+            } else if let Some(stripped) = line.strip_prefix("orga-match-label:") {
+                let val = stripped.trim().trim_matches('"');
                 match_label = Some(val.to_string());
             } else if !line.starts_with(' ') && !line.is_empty() {
                 in_metadata = false;
             }
         }
         if !in_metadata {
-            if line.starts_with("name:") {
-                let val = line["name:".len()..].trim().trim_matches('"');
+            if let Some(stripped) = line.strip_prefix("name:") {
+                let val = stripped.trim().trim_matches('"');
                 name = Some(val.to_string());
-            } else if line.starts_with("description:") {
-                let val = line["description:".len()..].trim().trim_matches('"');
+            } else if let Some(stripped) = line.strip_prefix("description:") {
+                let val = stripped.trim().trim_matches('"');
                 description = Some(val.to_string());
             }
         }
@@ -144,16 +144,14 @@ pub fn match_skills<'a>(
         if skill.match_always {
             activates = true;
         }
-        if let Some(ref col) = skill.match_column {
-            if col.to_lowercase() == ticket_column {
+        if let Some(ref col) = skill.match_column
+            && col.to_lowercase() == ticket_column {
                 activates = true;
             }
-        }
-        if let Some(ref lbl) = skill.match_label {
-            if ticket_labels_lower.iter().any(|l| l == &lbl.to_lowercase()) {
+        if let Some(ref lbl) = skill.match_label
+            && ticket_labels_lower.iter().any(|l| l == &lbl.to_lowercase()) {
                 activates = true;
             }
-        }
         if skill_label_requests.iter().any(|r| r == &skill.name) {
             activates = true;
         }

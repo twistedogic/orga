@@ -103,16 +103,13 @@ impl ArtifactStore for GitArtifactStore {
                 OrgaError::BackendError(format!("cannot write artifact: {e}"))
             })?;
 
-            match do_git_commit(&repo, &dest, ticket_id, &self.agent_name, name) {
-                Err(e) => {
-                    let _ = fs::remove_file(&dest);
-                    last_err = e.to_string();
-                    if attempt < RETRY_DELAYS_MS.len() - 1 {
-                        thread::sleep(Duration::from_millis(delay_ms));
-                    }
-                    continue;
+            if let Err(e) = do_git_commit(&repo, &dest, ticket_id, &self.agent_name, name) {
+                let _ = fs::remove_file(&dest);
+                last_err = e.to_string();
+                if attempt < RETRY_DELAYS_MS.len() - 1 {
+                    thread::sleep(Duration::from_millis(delay_ms));
                 }
-                Ok(()) => {}
+                continue;
             }
 
             match push(&repo, remote_name, &self.branch, &self.auth) {
@@ -261,17 +258,13 @@ fn commit_local(repo: &Repository, dest: &Path, content: &[u8], ticket_id: &str,
 }
 
 fn undo_commit(repo: &Repository) {
-    if let Ok(head) = repo.head() {
-        if let Some(head_oid) = head.target() {
-            if let Ok(head_commit) = repo.find_commit(head_oid) {
-                if head_commit.parent_count() > 0 {
-                    if let Ok(parent) = head_commit.parent(0) {
+    if let Ok(head) = repo.head()
+        && let Some(head_oid) = head.target()
+            && let Ok(head_commit) = repo.find_commit(head_oid)
+                && head_commit.parent_count() > 0
+                    && let Ok(parent) = head_commit.parent(0) {
                         let _ = repo.reset(parent.as_object(), ResetType::Hard, None);
                     }
-                }
-            }
-        }
-    }
 }
 
 fn sync_with_fallback(repo: &Repository, remote_name: &str, branch: &str, auth: &GitAuth, logger: &Logger) {

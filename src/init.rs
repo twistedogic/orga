@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+type RepoTriple = Result<(Option<String>, Option<String>, Option<String>), OrgaError>;
+
 use git2::Repository;
 use inquire::{Confirm, Password, Select, Text};
 use reqwest::blocking::Client;
@@ -370,7 +372,7 @@ fn run_artifact_setup(existing: Option<&ArtifactGitConfig>) -> Result<Option<Art
 fn detect_or_setup_repo(
     path: &PathBuf,
     existing: Option<&ArtifactGitConfig>,
-) -> Result<(Option<String>, Option<String>, Option<String>), OrgaError> {
+) -> RepoTriple {
     if path.exists() {
         open_existing_repo(path, existing)
     } else {
@@ -429,7 +431,7 @@ fn detect_or_setup_repo(
 fn open_existing_repo(
     path: &PathBuf,
     existing: Option<&ArtifactGitConfig>,
-) -> Result<(Option<String>, Option<String>, Option<String>), OrgaError> {
+) -> RepoTriple {
     Repository::open(path).map_err(|_| {
         OrgaError::ConfigError(format!(
             "path '{}' exists but is not a valid git repository",
@@ -450,8 +452,8 @@ fn init_local_repo(path: &PathBuf) -> Result<(), OrgaError> {
     Ok(())
 }
 
-fn clone_with_ssh_key_or_agent(url: &str, into: &PathBuf, ssh_key: Option<&str>) -> Result<(), git2::Error> {
-    let key_path = ssh_key.map(|p| crate::config::expand_tilde(p));
+fn clone_with_ssh_key_or_agent(url: &str, into: &Path, ssh_key: Option<&str>) -> Result<(), git2::Error> {
+    let key_path = ssh_key.map(crate::config::expand_tilde);
     let mut tried = false;
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(move |_url, username_from_url, _allowed| {

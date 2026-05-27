@@ -144,7 +144,7 @@ where
         build_context(
             &ticket,
             &memory_store,
-            artifact_store_opt.as_ref(),
+            artifact_store_opt.as_deref(),
             llm_cfg,
             config,
             skill_ctx.as_ref(),

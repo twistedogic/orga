@@ -43,11 +43,10 @@ impl Logger {
 
     fn write_entry(&self, level: &str, msg: &str) {
         let ts = Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
-        if let Ok(mut guard) = self.file.lock() {
-            if let Some(f) = guard.as_mut() {
+        if let Ok(mut guard) = self.file.lock()
+            && let Some(f) = guard.as_mut() {
                 let _ = writeln!(f, "{ts} {level} {msg}");
             }
-        }
     }
 }
 

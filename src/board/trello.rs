@@ -438,6 +438,7 @@ struct TrelloCard {
     id_board: String,
     url: String,
     closed: bool,
+    #[allow(dead_code)]
     checklists: Option<Vec<TrelloChecklist>>,
     members: Option<Vec<TrelloMember>>,
     actions: Option<Vec<TrelloAction>>,
@@ -452,15 +453,21 @@ struct TrelloLabel {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TrelloChecklist {
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     name: String,
+    #[allow(dead_code)]
     check_items: Vec<TrelloCheckItem>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TrelloCheckItem {
+    #[allow(dead_code)]
     id: String,
+    #[allow(dead_code)]
     name: String,
+    #[allow(dead_code)]
     state: String,
 }
 

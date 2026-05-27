@@ -168,24 +168,20 @@ impl AppConfig {
                 "backend is 'linear' but [linear] section is missing from config".into(),
             ));
         }
-        if self.board.backend == "trello" {
-            if let Some(ref t) = self.trello {
-                if t.board_id.is_empty() {
+        if self.board.backend == "trello"
+            && let Some(ref t) = self.trello
+                && t.board_id.is_empty() {
                     return Err(OrgaError::ConfigError(
                         "[trello] board_id is required".into(),
                     ));
                 }
-            }
-        }
-        if self.board.backend == "linear" {
-            if let Some(ref l) = self.linear {
-                if l.team_id.is_empty() {
+        if self.board.backend == "linear"
+            && let Some(ref l) = self.linear
+                && l.team_id.is_empty() {
                     return Err(OrgaError::ConfigError(
                         "[linear] team_id is required".into(),
                     ));
                 }
-            }
-        }
         if let Some(ref llm) = self.llm {
             const SUPPORTED_PROVIDERS: &[&str] = &["anthropic", "openai"];
             if !SUPPORTED_PROVIDERS.contains(&llm.provider.as_str()) {
