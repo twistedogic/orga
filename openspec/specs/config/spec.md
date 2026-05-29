@@ -139,3 +139,32 @@ The CLI SHALL validate the config at startup before executing any command. Unkno
 - **WHEN** the config file does not exist at the resolved path
 - **THEN** the CLI exits with a non-zero code and prints the expected config path
 
+### Requirement: Subagents config section
+The config file SHALL support zero or more `[[subagents]]` blocks. Each block SHALL have `name` (unique string, required), `description` (string, required), and `tools` (array of tool name strings, required). Each block MAY additionally have `skills` (array of skill name strings), `model` (string, LLM model override), and `max_actions` (integer, action cap override). Config validation SHALL reject duplicate subagent names and unknown tool names.
+
+#### Scenario: Subagents section parsed from config
+- **WHEN** the config file contains one or more `[[subagents]]` blocks
+- **THEN** they are deserialized into a list of `SubagentConfig` and available to the agent loop
+
+#### Scenario: Config with subagent model override
+- **WHEN** a `[[subagents]]` block contains `model = "claude-opus-4-5"`
+- **THEN** the subagent loop uses that model instead of the global `[llm].model`
+
+#### Scenario: Validation rejects duplicate subagent names
+- **WHEN** two `[[subagents]]` blocks have the same `name`
+- **THEN** config validation fails with a descriptive error at startup
+
+#### Scenario: Validation rejects unknown tool names in subagent
+- **WHEN** a `[[subagents]]` block lists a tool name that does not exist (e.g., `tools = ["fly"]`)
+- **THEN** config validation fails with a descriptive error at startup
+
+### Requirement: Workspace config section
+The config file SHALL support an optional `[workspace]` section with a `path` key specifying the base directory for all ticket workspaces. If omitted, workspace tools are unavailable.
+
+#### Scenario: Workspace configured
+- **WHEN** the config contains `[workspace]\npath = "~/.orga/workspaces"`
+- **THEN** `AppConfig.workspace` is `Some(WorkspaceConfig { path: "~/.orga/workspaces" })`
+
+#### Scenario: Workspace section omitted
+- **WHEN** the config does not contain a `[workspace]` section
+- **THEN** `AppConfig.workspace` is `None` and the agent starts without workspace support

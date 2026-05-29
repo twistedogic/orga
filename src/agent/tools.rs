@@ -7,6 +7,7 @@ use crate::artifact::ArtifactStore;
 use crate::board::Board;
 use crate::logging::Logger;
 use crate::memory::{CompactionStore, MemoryStore};
+use crate::workspace::WorkspaceStore;
 
 pub struct ToolContext {
     pub ticket_id: String,
@@ -16,6 +17,7 @@ pub struct ToolContext {
     pub compaction_store: CompactionStore,
     pub dry_run: bool,
     pub logger: Arc<Logger>,
+    pub workspace: Option<WorkspaceStore>,
 }
 
 fn dry_run_msg(action: &str) -> String {
@@ -44,12 +46,21 @@ pub async fn dispatch(tool_name: &str, args: &str, ctx: &ToolContext) -> String 
         "compact" => dispatch_compact(args, ctx).await,
         "done" => dispatch_done(args, ctx).await,
         "skip" => "skip".to_string(),
+        "return" => dispatch_return(args).await,
+        "read_file" => dispatch_read_file(args, ctx).await,
+        "write_file" => dispatch_write_file(args, ctx).await,
+        "list_files" => dispatch_list_files(ctx).await,
         other => format!("error: unknown tool '{other}'"),
     }
 }
 
 pub fn is_terminal_tool(tool_name: &str) -> bool {
-    matches!(tool_name, "done" | "skip")
+    matches!(tool_name, "done" | "skip" | "return")
+}
+
+pub fn tool_definitions_for(names: &[String]) -> Vec<ToolDefinition> {
+    let all = all_tool_definitions();
+    all.into_iter().filter(|t| names.iter().any(|n| n == &t.name)).collect()
 }
 
 #[derive(Deserialize)]
@@ -242,7 +253,29 @@ async fn dispatch_done(args: &str, ctx: &ToolContext) -> String {
     }
 }
 
+#[derive(Deserialize)]
+pub struct ReturnArgs {
+    pub result: String,
+}
+
+#[derive(Deserialize)]
+pub struct DispatchArgs {
+    pub subagent: String,
+    pub task: String,
+}
+
+async fn dispatch_return(args: &str) -> String {
+    match serde_json::from_str::<ReturnArgs>(args) {
+        Ok(parsed) => parsed.result,
+        Err(e) => format!("error: invalid args: {e}"),
+    }
+}
+
 pub fn tool_definitions() -> Vec<ToolDefinition> {
+    all_tool_definitions()
+}
+
+pub fn all_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "comment".to_string(),
@@ -355,7 +388,119 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                 "required": []
             }),
         },
+        ToolDefinition {
+            name: "dispatch".to_string(),
+            description: "Delegate work to a specialized subagent. The subagent will run its own loop and return a result.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "subagent": { "type": "string", "description": "Name of the subagent to invoke" },
+                    "task": { "type": "string", "description": "Description of what the subagent should do" }
+                },
+                "required": ["subagent", "task"]
+            }),
+        },
+        ToolDefinition {
+            name: "return".to_string(),
+            description: "Return a result from the subagent to the main agent. This ends the subagent loop.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "result": { "type": "string", "description": "The result to return to the main agent" }
+                },
+                "required": ["result"]
+            }),
+        },
+        ToolDefinition {
+            name: "read_file".to_string(),
+            description: "Read a text file from the ticket workspace. Returns file content.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path within the ticket workspace" }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDefinition {
+            name: "write_file".to_string(),
+            description: "Write text content to a file in the ticket workspace. Creates directories as needed, overwrites if exists.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path within the ticket workspace" },
+                    "content": { "type": "string", "description": "Text content to write" }
+                },
+                "required": ["path", "content"]
+            }),
+        },
+        ToolDefinition {
+            name: "list_files".to_string(),
+            description: "List all files in the ticket workspace. Returns a newline-separated flat list of relative paths.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
     ]
+}
+
+#[derive(Deserialize)]
+struct ReadFileArgs {
+    path: String,
+}
+
+async fn dispatch_read_file(args: &str, ctx: &ToolContext) -> String {
+    let parsed: ReadFileArgs = match serde_json::from_str(args) {
+        Ok(a) => a,
+        Err(e) => return format!("error: invalid args: {e}"),
+    };
+    let ws = match &ctx.workspace {
+        Some(w) => w,
+        None => return "error: workspace not configured".to_string(),
+    };
+    match ws.read(&ctx.ticket_id, &parsed.path) {
+        Ok(content) => content,
+        Err(crate::error::OrgaError::NotFound(_)) => "error: file not found".to_string(),
+        Err(e) => format!("error: {e}"),
+    }
+}
+
+#[derive(Deserialize)]
+struct WriteFileArgs {
+    path: String,
+    content: String,
+}
+
+async fn dispatch_write_file(args: &str, ctx: &ToolContext) -> String {
+    let parsed: WriteFileArgs = match serde_json::from_str(args) {
+        Ok(a) => a,
+        Err(e) => return format!("error: invalid args: {e}"),
+    };
+    log_action!(ctx, ctx.dry_run, format!("write_file '{}' for {}", parsed.path, ctx.ticket_id));
+    if ctx.dry_run {
+        return dry_run_msg(&format!("write_file '{}'", parsed.path));
+    }
+    let ws = match &ctx.workspace {
+        Some(w) => w,
+        None => return "error: workspace not configured".to_string(),
+    };
+    match ws.write(&ctx.ticket_id, &parsed.path, &parsed.content) {
+        Ok(()) => format!("wrote '{}'", parsed.path),
+        Err(e) => format!("error: {e}"),
+    }
+}
+
+async fn dispatch_list_files(ctx: &ToolContext) -> String {
+    let ws = match &ctx.workspace {
+        Some(w) => w,
+        None => return "error: workspace not configured".to_string(),
+    };
+    match ws.list(&ctx.ticket_id) {
+        Ok(listing) => listing,
+        Err(e) => format!("error: {e}"),
+    }
 }
 
 #[cfg(test)]
@@ -408,6 +553,7 @@ mod tests {
             compaction_store: CompactionStore::open(&db_path).unwrap(),
             dry_run,
             logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
+            workspace: None,
         }
     }
 
@@ -479,5 +625,29 @@ mod tests {
         let ctx = make_ctx(false);
         let result = dispatch("comment", r#"{"wrong_field":true}"#, &ctx).await;
         assert!(result.starts_with("error: invalid args"));
+    }
+
+    #[tokio::test]
+    async fn tool_definitions_for_returns_subset() {
+        let names = vec!["comment".to_string(), "done".to_string()];
+        let defs = tool_definitions_for(&names);
+        assert_eq!(defs.len(), 2);
+        assert!(defs.iter().any(|d| d.name == "comment"));
+        assert!(defs.iter().any(|d| d.name == "done"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_return_returns_result_string() {
+        let ctx = make_ctx(false);
+        let result = dispatch("return", r#"{"result":"analysis complete"}"#, &ctx).await;
+        assert_eq!(result, "analysis complete");
+    }
+
+    #[tokio::test]
+    async fn is_terminal_tool_includes_return() {
+        assert!(is_terminal_tool("return"));
+        assert!(is_terminal_tool("done"));
+        assert!(is_terminal_tool("skip"));
+        assert!(!is_terminal_tool("comment"));
     }
 }

@@ -54,8 +54,24 @@ pub struct WorkflowEntry {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct WorkspaceConfig {
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SkillsConfig {
     pub path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubagentConfig {
+    pub name: String,
+    pub description: String,
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    pub model: Option<String>,
+    pub max_actions: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +125,9 @@ pub struct AppConfig {
     pub workflow: Vec<WorkflowEntry>,
     pub comment_compaction_threshold: Option<usize>,
     pub skills: Option<SkillsConfig>,
+    pub workspace: Option<WorkspaceConfig>,
+    #[serde(default)]
+    pub subagents: Vec<SubagentConfig>,
 }
 
 impl AppConfig {
@@ -232,6 +251,31 @@ impl AppConfig {
                 (Some(_), None) => {}
             }
         }
+
+        // Validate subagents
+        const VALID_TOOLS: &[&str] = &[
+            "comment", "move_ticket", "assign", "create_sub", "set_memory",
+            "commit_artifact", "get_artifact", "compact", "done", "skip",
+            "dispatch", "return", "read_file", "write_file", "list_files",
+        ];
+        let mut seen_names = std::collections::HashSet::new();
+        for sub in &self.subagents {
+            if !seen_names.insert(sub.name.clone()) {
+                return Err(OrgaError::ConfigError(format!(
+                    "[subagents] duplicate subagent name '{}'",
+                    sub.name
+                )));
+            }
+            for tool in &sub.tools {
+                if !VALID_TOOLS.contains(&tool.as_str()) {
+                    return Err(OrgaError::ConfigError(format!(
+                        "[subagents] subagent '{}' references unknown tool '{}'",
+                        sub.name, tool
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -271,6 +315,10 @@ impl AppConfig {
 
     pub fn skills_path(&self) -> Option<PathBuf> {
         self.skills.as_ref().map(|s| expand_tilde(&s.path))
+    }
+
+    pub fn workspace_base_path(&self) -> Option<PathBuf> {
+        self.workspace.as_ref().map(|w| expand_tilde(&w.path))
     }
 
 }
@@ -698,5 +746,48 @@ model = "claude-opus-4-5"
         let p = cfg.skills_path().unwrap();
         assert!(!p.to_str().unwrap().contains('~'));
         assert!(p.ends_with(".orga/skills"));
+    }
+
+    #[test]
+    fn subagent_config_parses_from_toml() {
+        let content = format!("{VALID_CONFIG}\n[[subagents]]\nname = \"researcher\"\ndescription = \"Does research\"\ntools = [\"comment\", \"done\"]\n");
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.subagents.len(), 1);
+        assert_eq!(cfg.subagents[0].name, "researcher");
+        assert_eq!(cfg.subagents[0].tools, vec!["comment", "done"]);
+    }
+
+    #[test]
+    fn subagent_config_with_optional_fields() {
+        let content = format!("{VALID_CONFIG}\n[[subagents]]\nname = \"drafter\"\ndescription = \"Drafts content\"\ntools = [\"commit_artifact\"]\nskills = [\"writing\"]\nmodel = \"gpt-4o\"\nmax_actions = 20\n");
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.subagents[0].model.as_deref(), Some("gpt-4o"));
+        assert_eq!(cfg.subagents[0].max_actions, Some(20));
+        assert_eq!(cfg.subagents[0].skills, vec!["writing"]);
+    }
+
+    #[test]
+    fn duplicate_subagent_name_fails_validation() {
+        let content = format!("{VALID_CONFIG}\n[[subagents]]\nname = \"bot\"\ndescription = \"a\"\ntools = [\"done\"]\n[[subagents]]\nname = \"bot\"\ndescription = \"b\"\ntools = [\"done\"]\n");
+        let f = write_config(&content);
+        let err = AppConfig::load(f.path()).unwrap_err();
+        assert!(err.to_string().contains("duplicate subagent name"));
+    }
+
+    #[test]
+    fn unknown_tool_name_in_subagent_fails_validation() {
+        let content = format!("{VALID_CONFIG}\n[[subagents]]\nname = \"bot\"\ndescription = \"a\"\ntools = [\"fly\"]\n");
+        let f = write_config(&content);
+        let err = AppConfig::load(f.path()).unwrap_err();
+        assert!(err.to_string().contains("unknown tool"));
+    }
+
+    #[test]
+    fn no_subagents_config_loads_fine() {
+        let f = write_config(VALID_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.subagents.is_empty());
     }
 }

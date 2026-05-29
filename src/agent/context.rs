@@ -1,5 +1,5 @@
 use crate::artifact::ArtifactStore;
-use crate::config::{AppConfig, LlmConfig};
+use crate::config::{AppConfig, LlmConfig, SubagentConfig};
 use crate::memory::MemoryStore;
 use crate::models::Ticket;
 
@@ -20,17 +20,61 @@ pub fn build_context(
     llm_cfg: &LlmConfig,
     app_cfg: &AppConfig,
     skill_ctx: Option<&SkillContext>,
+    subagents: &[(String, String)],
 ) -> TicketContext {
-    let system = build_system_prompt(ticket, app_cfg, skill_ctx);
+    let system = build_system_prompt(ticket, app_cfg, skill_ctx, subagents);
     let user = build_user_message(ticket, memory_store, artifact_store, llm_cfg);
     TicketContext { system, user }
 }
 
-fn build_system_prompt(ticket: &Ticket, app_cfg: &AppConfig, skill_ctx: Option<&SkillContext>) -> String {
+pub fn build_subagent_context(
+    subagent_cfg: &SubagentConfig,
+    ticket: &Ticket,
+    task: &str,
+    memory_store: &MemoryStore,
+    artifact_store: Option<&dyn ArtifactStore>,
+    llm_cfg: &LlmConfig,
+    skill_ctx: Option<&SkillContext>,
+) -> TicketContext {
+    let system = build_subagent_system_prompt(subagent_cfg, skill_ctx);
+    let mut user = build_user_message(ticket, memory_store, artifact_store, llm_cfg);
+    user.push_str(&format!("\n\n## Your Task\n{task}"));
+    TicketContext { system, user }
+}
+
+fn build_subagent_system_prompt(subagent_cfg: &SubagentConfig, skill_ctx: Option<&SkillContext>) -> String {
     let mut parts: Vec<String> = Vec::new();
 
+    let tools_list = subagent_cfg.tools.join(", ");
     parts.push(format!(
-        "You are an AI agent named '{}' operating on a kanban board. \
+        "You are a specialized subagent named '{}'. Your role: {}\n\
+\n\
+Available tools: {}, return.\n\
+\n\
+Use `return(result)` when you have completed your task — pass back a concise result summary.\n\
+Do NOT call `comment`, `done`, or `skip` unless they are in your available tools.",
+        subagent_cfg.name, subagent_cfg.description, tools_list
+    ));
+
+    if let Some(ctx) = skill_ctx {
+        if !ctx.active.is_empty() {
+            let mut section = "\n## Active Skills".to_string();
+            for (name, body) in &ctx.active {
+                section.push_str(&format!("\n### {name}\n{body}"));
+            }
+            parts.push(section);
+        }
+    }
+
+    parts.join("\n")
+}
+
+fn build_system_prompt(ticket: &Ticket, app_cfg: &AppConfig, skill_ctx: Option<&SkillContext>, subagents: &[(String, String)]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    if subagents.is_empty() {
+        parts.push(format!(
+            "You are an AI agent named '{}' operating on a kanban board. \
 You communicate with teammates exclusively through ticket comments, artifact files, \
 checklists, and board actions. You are a first-class board member alongside humans.\n\
 \n\
@@ -39,8 +83,29 @@ set_memory, commit_artifact, get_artifact, compact, done, skip.\n\
 \n\
 Use `done(comment?)` when you have completed work on a ticket — this returns it to the creator.\n\
 Use `skip()` if the ticket is not actionable right now.",
-        app_cfg.agent.name
-    ));
+            app_cfg.agent.name
+        ));
+    } else {
+        parts.push(format!(
+            "You are an AI agent named '{}' operating on a kanban board. \
+You are a dispatcher: you coordinate work by delegating to specialized subagents and \
+communicating results to teammates via ticket comments.\n\
+\n\
+Available tools: comment, dispatch, skip, done.\n\
+\n\
+Use `dispatch(subagent, task)` to delegate work to a subagent. The subagent will return a result.\n\
+Use `comment(text)` to communicate with teammates or ask for clarification.\n\
+Use `done(comment?)` when the user is satisfied and the ticket is complete.\n\
+Use `skip()` if the ticket is not actionable right now.",
+            app_cfg.agent.name
+        ));
+
+        let mut section = "\n## Available Subagents".to_string();
+        for (name, desc) in subagents {
+            section.push_str(&format!("\n- **{name}**: {desc}"));
+        }
+        parts.push(section);
+    }
 
     if let Some(ctx) = skill_ctx
         && !ctx.available.is_empty() {
@@ -227,6 +292,8 @@ mod tests {
             workflow: vec![],
             comment_compaction_threshold: None,
             skills: None,
+            workspace: None,
+            subagents: vec![],
         }
     }
 
@@ -239,7 +306,7 @@ mod tests {
         let ticket = make_ticket("Fix the bug");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(ctx.user.contains("Test Ticket"));
         assert!(ctx.user.contains("Fix the bug"));
     }
@@ -249,7 +316,7 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(ctx.system.contains("bot-1"));
     }
 
@@ -259,7 +326,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
         mem.set("T-1", "remember this context").unwrap();
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(ctx.user.contains("remember this context"));
     }
 
@@ -268,7 +335,7 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(!ctx.user.contains("Agent Memory"));
     }
 
@@ -282,7 +349,7 @@ mod tests {
         });
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(ctx.user.contains("first 10 comments: auth work"));
     }
 
@@ -323,7 +390,7 @@ mod tests {
         let store: Box<dyn ArtifactStore> = Box::new(InlineArtifactStore {
             content: "small content".to_string(),
         });
-        let ctx = build_context(&ticket, &mem, Some(&store), &make_llm_cfg(), &make_app_cfg(), None);
+        let ctx = build_context(&ticket, &mem, Some(store.as_ref()), &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(ctx.user.contains("small content"));
         assert!(!ctx.user.contains("too large"));
     }
@@ -337,7 +404,7 @@ mod tests {
         let store: Box<dyn ArtifactStore> = Box::new(InlineArtifactStore { content: big });
         let mut llm_cfg = make_llm_cfg();
         llm_cfg.max_artifact_inline_bytes = Some(100);
-        let ctx = build_context(&ticket, &mem, Some(&store), &llm_cfg, &make_app_cfg(), None);
+        let ctx = build_context(&ticket, &mem, Some(store.as_ref()), &llm_cfg, &make_app_cfg(), None, &[]);
         assert!(ctx.user.contains("get_artifact"));
         assert!(!ctx.user.contains("xxxxxxxxxx"));
     }
@@ -354,7 +421,7 @@ mod tests {
             ],
             active: vec![],
         };
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx));
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
         assert!(ctx.system.contains("## Available Skills"));
         assert!(ctx.system.contains("**code-review**"));
         assert!(ctx.system.contains("**security**"));
@@ -369,7 +436,7 @@ mod tests {
             available: vec![("code-review".to_string(), "Reviews code.".to_string())],
             active: vec![("code-review".to_string(), "Follow these steps to review code.".to_string())],
         };
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx));
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
         assert!(ctx.system.contains("## Active Skills"));
         assert!(ctx.system.contains("### code-review"));
         assert!(ctx.system.contains("Follow these steps to review code."));
@@ -380,7 +447,7 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None);
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(!ctx.system.contains("## Available Skills"));
         assert!(!ctx.system.contains("## Active Skills"));
     }
@@ -394,7 +461,7 @@ mod tests {
             available: vec![("s".to_string(), "desc".to_string())],
             active: vec![],
         };
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx));
+        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
         assert!(ctx.system.contains("## Available Skills"));
         assert!(!ctx.system.contains("## Active Skills"));
     }

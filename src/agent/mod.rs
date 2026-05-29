@@ -15,11 +15,12 @@ use crate::config::AppConfig;
 use crate::error::OrgaError;
 use crate::logging::Logger;
 use crate::memory::{CompactionStore, MemoryStore};
+use crate::workspace::WorkspaceStore;
 
 use config::{LlmClient, build_llm_client};
-use context::{SkillContext, build_context};
-use skills::{match_skills, scan_skills};
-use tools::{ToolContext, dispatch, is_terminal_tool, tool_definitions};
+use context::{SkillContext, build_context, build_subagent_context};
+use skills::{SkillMeta, match_skills, scan_skills};
+use tools::{ToolContext, dispatch, is_terminal_tool, tool_definitions, tool_definitions_for};
 
 pub async fn run_agent(once: bool, dry_run: bool, config: &AppConfig, logger: Arc<Logger>) -> Result<(), OrgaError> {
     let llm_cfg = config.llm_config()?;
@@ -66,7 +67,7 @@ async fn run_once<C>(
     logger: Arc<Logger>,
 ) -> Result<(), OrgaError>
 where
-    C: CompletionClient,
+    C: CompletionClient + Sync,
     C::CompletionModel: CompletionModel + Clone + 'static,
 {
     let board = build_board(config, Arc::clone(&logger))?;
@@ -111,7 +112,7 @@ async fn process_ticket<C>(
     logger: Arc<Logger>,
 ) -> Result<(), OrgaError>
 where
-    C: CompletionClient,
+    C: CompletionClient + Sync,
     C::CompletionModel: CompletionModel + Clone + 'static,
 {
     let llm_cfg = config.llm_config()?;
@@ -133,14 +134,22 @@ where
     }
 
     let ctx_msg = {
-        let skill_ctx = config.skills_path().map(|path| {
-            let all = scan_skills(&path, &logger);
-            let matched = match_skills(&all, &ticket.summary, &logger);
-            SkillContext {
-                available: all.iter().map(|s| (s.name.clone(), s.description.clone())).collect(),
+        let all_skills = config.skills_path().map(|path| scan_skills(&path, &logger)).unwrap_or_default();
+
+        let skill_ctx = if !all_skills.is_empty() {
+            let matched = match_skills(&all_skills, &ticket.summary, &logger);
+            Some(SkillContext {
+                available: all_skills.iter().map(|s| (s.name.clone(), s.description.clone())).collect(),
                 active: matched.iter().map(|s| (s.name.clone(), s.body.clone())).collect(),
-            }
-        });
+            })
+        } else {
+            None
+        };
+
+        let subagent_descs: Vec<(String, String)> = config.subagents.iter()
+            .map(|s| (s.name.clone(), s.description.clone()))
+            .collect();
+
         build_context(
             &ticket,
             &memory_store,
@@ -148,11 +157,27 @@ where
             llm_cfg,
             config,
             skill_ctx.as_ref(),
+            &subagent_descs,
         )
     };
 
     let model = client.completion_model(&llm_cfg.model);
-    let tools = tool_definitions();
+
+    // Choose tool set based on whether subagents are configured
+    let tools = if config.subagents.is_empty() {
+        tool_definitions()
+    } else {
+        let main_agent_tools = vec![
+            "comment".to_string(),
+            "dispatch".to_string(),
+            "skip".to_string(),
+            "done".to_string(),
+            "set_memory".to_string(),
+            "compact".to_string(),
+        ];
+        tool_definitions_for(&main_agent_tools)
+    };
+
     let max_actions = llm_cfg.max_actions_per_ticket();
 
     logger.info(&format!("[agent] processing ticket {ticket_id} (max_actions={max_actions}, dry_run={dry_run})"));
@@ -216,6 +241,7 @@ where
             compaction_store: tool_compaction,
             dry_run,
             logger: Arc::clone(&logger),
+            workspace: config.workspace_base_path().map(WorkspaceStore::new),
         };
 
         let mut terminal = false;
@@ -228,7 +254,11 @@ where
                 println!("[dry-run] would call tool '{name}' with args: {args}");
             }
 
-            let result = dispatch(name, &args, &tool_ctx).await;
+            let result = if name == "dispatch" {
+                handle_dispatch_tool(&args, &ticket, dry_run, client, config, Arc::clone(&logger)).await
+            } else {
+                dispatch(name, &args, &tool_ctx).await
+            };
 
             history.push(Message::tool_result(tc.id.clone(), result.clone()));
 
@@ -246,4 +276,192 @@ where
     }
 
     Ok(())
+}
+
+async fn handle_dispatch_tool<C>(
+    args: &str,
+    ticket: &crate::models::Ticket,
+    dry_run: bool,
+    client: &C,
+    config: &AppConfig,
+    logger: Arc<Logger>,
+) -> String
+where
+    C: CompletionClient,
+    C::CompletionModel: CompletionModel + Clone + 'static,
+{
+    let parsed: tools::DispatchArgs = match serde_json::from_str(args) {
+        Ok(a) => a,
+        Err(e) => return format!("error: invalid args: {e}"),
+    };
+    if dry_run {
+        return format!("[dry-run] dispatch subagent '{}' with task: {} would have been executed", parsed.subagent, parsed.task);
+    }
+    let sub_cfg = config.subagents.iter().find(|s| s.name == parsed.subagent);
+    let sub_cfg = match sub_cfg {
+        Some(s) => s,
+        None => return format!("error: no subagent named '{}' is configured", parsed.subagent),
+    };
+    run_subagent_loop(client, sub_cfg, ticket, &parsed.task, dry_run, config, logger).await
+}
+
+async fn run_subagent_loop<C>(
+    client: &C,
+    sub_cfg: &crate::config::SubagentConfig,
+    ticket: &crate::models::Ticket,
+    task: &str,
+    dry_run: bool,
+    config: &AppConfig,
+    logger: Arc<Logger>,
+) -> String
+where
+    C: CompletionClient,
+    C::CompletionModel: CompletionModel + Clone + 'static,
+{
+    let llm_cfg = match config.llm_config() {
+        Ok(c) => c,
+        Err(e) => return format!("error: {e}"),
+    };
+    let db_path = config.memory_db_path();
+    let memory_store = match MemoryStore::open(&db_path) {
+        Ok(m) => m,
+        Err(e) => return format!("error opening memory: {e}"),
+    };
+    let artifact_store = build_artifact_store(config, Arc::clone(&logger)).ok();
+
+    // Build skill context for subagent
+    let all_skills = config.skills_path().map(|path| scan_skills(&path, &logger)).unwrap_or_default();
+    let skill_ctx = if !all_skills.is_empty() {
+        let active: Vec<&SkillMeta> = if sub_cfg.skills.is_empty() {
+            match_skills(&all_skills, &ticket.summary, &logger)
+        } else {
+            all_skills.iter().filter(|s| sub_cfg.skills.contains(&s.name)).collect()
+        };
+        Some(SkillContext {
+            available: vec![],
+            active: active.iter().map(|s| (s.name.clone(), s.body.clone())).collect(),
+        })
+    } else {
+        None
+    };
+
+    let ctx_msg = context::build_subagent_context(
+        sub_cfg,
+        ticket,
+        task,
+        &memory_store,
+        artifact_store.as_deref(),
+        llm_cfg,
+        skill_ctx.as_ref(),
+    );
+
+    let model_name = sub_cfg.model.as_deref().unwrap_or(&llm_cfg.model);
+    let model = client.completion_model(model_name);
+    let max_actions = sub_cfg.max_actions.unwrap_or_else(|| llm_cfg.max_actions_per_ticket());
+
+    let mut tool_names = sub_cfg.tools.clone();
+    if !tool_names.contains(&"return".to_string()) {
+        tool_names.push("return".to_string());
+    }
+    let tools = tool_definitions_for(&tool_names);
+
+    logger.info(&format!(
+        "[subagent:{}] starting for ticket {} (max_actions={max_actions})",
+        sub_cfg.name, ticket.summary.id
+    ));
+
+    let mut action_count = 0usize;
+    let mut history: Vec<Message> = Vec::new();
+    let mut last_text = String::new();
+
+    loop {
+        if action_count >= max_actions {
+            logger.info(&format!("[subagent:{}] hit action cap without returning", sub_cfg.name));
+            return "error: subagent hit action cap without returning a result".to_string();
+        }
+
+        let prompt_msg = if action_count == 0 {
+            ctx_msg.user.clone()
+        } else {
+            "Continue working on the task based on the tool results above.".to_string()
+        };
+
+        let req = CompletionRequestBuilder::new(model.clone(), prompt_msg)
+            .preamble(ctx_msg.system.clone())
+            .messages(history.clone())
+            .tools(tools.clone());
+
+        let response = match req.send().await {
+            Ok(r) => r,
+            Err(e) => return format!("error: LLM completion error: {e}"),
+        };
+
+        let choices: Vec<AssistantContent> = response.choice.into_iter().collect();
+
+        last_text = choices.iter()
+            .filter_map(|c| if let AssistantContent::Text(t) = c { Some(t.text.clone()) } else { None })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let tool_calls: Vec<_> = choices.iter()
+            .filter_map(|c| if let AssistantContent::ToolCall(tc) = c { Some(tc.clone()) } else { None })
+            .collect();
+
+        history.push(Message::assistant(last_text.clone()));
+
+        if tool_calls.is_empty() {
+            logger.info(&format!("[subagent:{}] no tool calls, returning last text", sub_cfg.name));
+            return last_text;
+        }
+
+        let tool_board = match build_board(config, Arc::clone(&logger)) {
+            Ok(b) => b,
+            Err(e) => return format!("error building board: {e}"),
+        };
+        let tool_memory = match MemoryStore::open(&db_path) {
+            Ok(m) => m,
+            Err(e) => return format!("error opening memory: {e}"),
+        };
+        let tool_compaction = match CompactionStore::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => return format!("error opening compaction: {e}"),
+        };
+        let tool_artifact = build_artifact_store(config, Arc::clone(&logger)).ok();
+
+        let tool_ctx = ToolContext {
+            ticket_id: ticket.summary.id.clone(),
+            board: tool_board,
+            memory_store: tool_memory,
+            artifact_store: tool_artifact,
+            compaction_store: tool_compaction,
+            dry_run,
+            logger: Arc::clone(&logger),
+            workspace: config.workspace_base_path().map(WorkspaceStore::new),
+        };
+
+        let mut terminal = false;
+        let mut result_value = String::new();
+
+        for tc in &tool_calls {
+            let name = &tc.function.name;
+            let args = tc.function.arguments.to_string();
+
+            logger.info(&format!("[subagent:{}] calling tool '{name}'", sub_cfg.name));
+
+            let result = dispatch(name, &args, &tool_ctx).await;
+
+            if name == "return" {
+                result_value = result.clone();
+                terminal = true;
+            }
+
+            history.push(Message::tool_result(tc.id.clone(), result));
+            action_count += 1;
+        }
+
+        if terminal {
+            logger.info(&format!("[subagent:{}] return called, finishing", sub_cfg.name));
+            return result_value;
+        }
+    }
 }
