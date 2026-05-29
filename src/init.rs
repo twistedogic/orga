@@ -1,15 +1,12 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-type RepoTriple = Result<(Option<String>, Option<String>, Option<String>), OrgaError>;
-
-use git2::Repository;
-use inquire::{Confirm, Password, Select, Text};
+use inquire::{Password, Select, Text};
 use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use serde::Deserialize;
 
-use crate::config::{AppConfig, ArtifactGitConfig};
+use crate::config::AppConfig;
 use crate::error::OrgaError;
 
 // ── Linear init helpers ─────────────────────────────────────────────────────
@@ -246,8 +243,6 @@ fn run_trello_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(
         .map(|b| b.id.as_str())
         .unwrap_or_default();
 
-    let artifact = run_artifact_setup(existing.and_then(|c| c.artifact.as_ref()).and_then(|a| a.git.as_ref()))?;
-
     write_config_file(
         config_path,
         &agent_name,
@@ -255,7 +250,6 @@ fn run_trello_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(
         &api_key,
         &token,
         &me.id,
-        artifact.as_ref(),
     )?;
 
     println!("Config written to {}", config_path.display());
@@ -326,181 +320,22 @@ fn run_linear_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(
         .map(|t| t.id.as_str())
         .unwrap_or_default();
 
-    let artifact = run_artifact_setup(existing.and_then(|c| c.artifact.as_ref()).and_then(|a| a.git.as_ref()))?;
-
-    write_linear_config_file(config_path, &agent_name, team_id, &api_key, artifact.as_ref())?;
+    write_linear_config_file(config_path, &agent_name, team_id, &api_key)?;
 
     println!("Config written to {}", config_path.display());
     Ok(())
 }
 
-fn run_artifact_setup(existing: Option<&ArtifactGitConfig>) -> Result<Option<ArtifactGitConfig>, OrgaError> {
-    let configure = Confirm::new("Configure artifact store?")
-        .with_default(existing.is_some())
-        .prompt()
-        .map_err(|e| OrgaError::ConfigError(e.to_string()))?;
-
-    if !configure {
-        return Ok(None);
-    }
-
-    let default_path = existing
-        .map(|g| g.path.as_str())
-        .unwrap_or("~/.orga/artifacts")
-        .to_string();
-
-    let path_str = Text::new("Artifact store path:")
-        .with_default(&default_path)
-        .prompt()
-        .map_err(|e| OrgaError::ConfigError(e.to_string()))?;
-
-    let expanded = crate::config::expand_tilde(&path_str);
-
-    let (remote, branch, ssh_key) = detect_or_setup_repo(&expanded, existing)?;
-
-    Ok(Some(ArtifactGitConfig {
-        path: path_str,
-        remote,
-        branch,
-        ssh_key,
-        ssh_passphrase: None,
-        http_username: None,
-        http_password: None,
-    }))
-}
-
-fn detect_or_setup_repo(
-    path: &PathBuf,
-    existing: Option<&ArtifactGitConfig>,
-) -> RepoTriple {
-    if path.exists() {
-        open_existing_repo(path, existing)
-    } else {
-        // Path doesn't exist — ask for optional remote URL
-        let url = Text::new("Remote URL (leave blank for local-only):")
-            .with_default("")
-            .prompt()
-            .map_err(|e| OrgaError::ConfigError(e.to_string()))?;
-
-        if url.is_empty() {
-            init_local_repo(path)?;
-            return Ok((None, None, None));
-        }
-
-        let default_branch = existing
-            .and_then(|g| g.branch.as_deref())
-            .unwrap_or("main")
-            .to_string();
-        let default_remote = existing
-            .and_then(|g| g.remote.as_deref())
-            .unwrap_or("origin")
-            .to_string();
-        let default_ssh_key = existing
-            .and_then(|g| g.ssh_key.as_deref())
-            .unwrap_or("~/.ssh/id_rsa")
-            .to_string();
-
-        let branch = Text::new("Branch:")
-            .with_default(&default_branch)
-            .prompt()
-            .map_err(|e| OrgaError::ConfigError(e.to_string()))?;
-
-        let remote_name = Text::new("Remote name:")
-            .with_default(&default_remote)
-            .prompt()
-            .map_err(|e| OrgaError::ConfigError(e.to_string()))?;
-
-        let ssh_key_input = Text::new("SSH key path (leave blank to use SSH agent):")
-            .with_default(&default_ssh_key)
-            .prompt()
-            .map_err(|e| OrgaError::ConfigError(e.to_string()))?;
-        let ssh_key = if ssh_key_input.is_empty() { None } else { Some(ssh_key_input) };
-
-        print!("Cloning {}... ", url);
-        clone_with_ssh_key_or_agent(&url, path, ssh_key.as_deref()).map_err(|e| {
-            OrgaError::ConfigError(format!(
-                "clone failed: {e}\nMake sure your SSH key is correct or your SSH agent is running."
-            ))
-        })?;
-        println!("done");
-
-        Ok((Some(remote_name), Some(branch), ssh_key))
-    }
-}
-
-fn open_existing_repo(
-    path: &PathBuf,
-    existing: Option<&ArtifactGitConfig>,
-) -> RepoTriple {
-    Repository::open(path).map_err(|_| {
-        OrgaError::ConfigError(format!(
-            "path '{}' exists but is not a valid git repository",
-            path.display()
-        ))
-    })?;
-    let remote = existing.and_then(|g| g.remote.clone());
-    let branch = existing.and_then(|g| g.branch.clone());
-    let ssh_key = existing.and_then(|g| g.ssh_key.clone());
-    Ok((remote, branch, ssh_key))
-}
-
-fn init_local_repo(path: &PathBuf) -> Result<(), OrgaError> {
-    Repository::init(path).map_err(|e| {
-        OrgaError::ConfigError(format!("git init failed: {e}"))
-    })?;
-    println!("Initialized empty git repository at {}", path.display());
-    Ok(())
-}
-
-fn clone_with_ssh_key_or_agent(url: &str, into: &Path, ssh_key: Option<&str>) -> Result<(), git2::Error> {
-    let key_path = ssh_key.map(crate::config::expand_tilde);
-    let mut tried = false;
-    let mut callbacks = git2::RemoteCallbacks::new();
-    callbacks.credentials(move |_url, username_from_url, _allowed| {
-        if tried {
-            return Err(git2::Error::from_str("authentication failed"));
-        }
-        tried = true;
-        let username = username_from_url.unwrap_or("git");
-        match &key_path {
-            Some(kp) => git2::Cred::ssh_key(username, None, kp, None),
-            None => git2::Cred::ssh_key_from_agent(username),
-        }
-    });
-
-    let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.remote_callbacks(callbacks);
-
-    let mut builder = git2::build::RepoBuilder::new();
-    builder.fetch_options(fetch_opts);
-    builder.clone(url, into)?;
-    Ok(())
-}
 
 fn write_linear_config_file(
     config_path: &Path,
     agent_name: &str,
     team_id: &str,
     api_key: &str,
-    artifact: Option<&ArtifactGitConfig>,
 ) -> Result<(), OrgaError> {
-    let mut toml = format!(
+    let toml = format!(
         "[agent]\nname = {agent_name:?}\n\n[board]\nbackend = \"linear\"\n\n[linear]\napi_key = {api_key:?}\nteam_id = {team_id:?}\n",
     );
-
-    if let Some(git) = artifact {
-        toml.push_str("\n[artifact]\nbackend = \"git\"\n\n[artifact.git]\n");
-        toml.push_str(&format!("path = {:?}\n", git.path));
-        if let Some(ref remote) = git.remote {
-            toml.push_str(&format!("remote = {remote:?}\n"));
-        }
-        if let Some(ref branch) = git.branch {
-            toml.push_str(&format!("branch = {branch:?}\n"));
-        }
-        if let Some(ref ssh_key) = git.ssh_key {
-            toml.push_str(&format!("ssh_key = {ssh_key:?}\n"));
-        }
-    }
 
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
@@ -532,25 +367,10 @@ fn write_config_file(
     api_key: &str,
     token: &str,
     member_id: &str,
-    artifact: Option<&ArtifactGitConfig>,
 ) -> Result<(), OrgaError> {
-    let mut toml = format!(
+    let toml = format!(
         "[agent]\nname = {agent_name:?}\n\n[board]\nbackend = \"trello\"\n\n[trello]\napi_key = {api_key:?}\ntoken = {token:?}\nmember_id = {member_id:?}\nboard_id = {board_id:?}\n",
     );
-
-    if let Some(git) = artifact {
-        toml.push_str("\n[artifact]\nbackend = \"git\"\n\n[artifact.git]\n");
-        toml.push_str(&format!("path = {:?}\n", git.path));
-        if let Some(ref remote) = git.remote {
-            toml.push_str(&format!("remote = {remote:?}\n"));
-        }
-        if let Some(ref branch) = git.branch {
-            toml.push_str(&format!("branch = {branch:?}\n"));
-        }
-        if let Some(ref ssh_key) = git.ssh_key {
-            toml.push_str(&format!("ssh_key = {ssh_key:?}\n"));
-        }
-    }
 
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
@@ -583,7 +403,7 @@ mod tests {
     #[test]
     fn write_config_file_produces_valid_toml() {
         let f = NamedTempFile::new().unwrap();
-        write_config_file(f.path(), "agent-1", "board-abc", "key123", "tok456", "mem789", None).unwrap();
+        write_config_file(f.path(), "agent-1", "board-abc", "key123", "tok456", "mem789").unwrap();
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.agent.name, "agent-1");
         assert_eq!(cfg.trello.as_ref().unwrap().board_id, "board-abc");
@@ -598,16 +418,16 @@ mod tests {
     fn write_config_file_creates_parent_dirs() {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("a").join("b").join("config.toml");
-        write_config_file(&nested, "agent-x", "board-x", "k", "t", "m", None).unwrap();
+        write_config_file(&nested, "agent-x", "board-x", "k", "t", "m").unwrap();
         assert!(nested.exists());
     }
 
     #[test]
     fn write_config_file_overwrites_existing_preserving_new_values() {
         let f = NamedTempFile::new().unwrap();
-        write_config_file(f.path(), "old-name", "old-board", "old-key", "old-tok", "old-mem", None)
+        write_config_file(f.path(), "old-name", "old-board", "old-key", "old-tok", "old-mem")
             .unwrap();
-        write_config_file(f.path(), "new-name", "new-board", "new-key", "new-tok", "new-mem", None)
+        write_config_file(f.path(), "new-name", "new-board", "new-key", "new-tok", "new-mem")
             .unwrap();
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.agent.name, "new-name");
@@ -615,150 +435,9 @@ mod tests {
     }
 
     #[test]
-    fn write_config_file_no_artifact_section() {
-        let f = NamedTempFile::new().unwrap();
-        write_config_file(f.path(), "agent-1", "board-abc", "key", "tok", "mem", None).unwrap();
-        let cfg = AppConfig::load(f.path()).unwrap();
-        assert!(cfg.artifact.is_none());
-    }
-
-    #[test]
-    fn write_config_file_local_artifact_section() {
-        let f = NamedTempFile::new().unwrap();
-        let git_cfg = ArtifactGitConfig {
-            path: "/tmp/artifacts".to_string(),
-            remote: None,
-            branch: None,
-            ssh_key: None,
-            ssh_passphrase: None,
-            http_username: None,
-            http_password: None,
-        };
-        write_config_file(f.path(), "agent-1", "board-abc", "key", "tok", "mem", Some(&git_cfg))
-            .unwrap();
-        let cfg = AppConfig::load(f.path()).unwrap();
-        let artifact = cfg.artifact.unwrap();
-        assert_eq!(artifact.backend, "git");
-        let git = artifact.git.unwrap();
-        assert_eq!(git.path, "/tmp/artifacts");
-        assert!(git.remote.is_none());
-        assert!(git.branch.is_none());
-    }
-
-    #[test]
-    fn write_config_file_artifact_with_remote_and_branch() {
-        let f = NamedTempFile::new().unwrap();
-        let git_cfg = ArtifactGitConfig {
-            path: "/tmp/artifacts".to_string(),
-            remote: Some("origin".to_string()),
-            branch: Some("main".to_string()),
-            ssh_key: None,
-            ssh_passphrase: None,
-            http_username: None,
-            http_password: None,
-        };
-        write_config_file(f.path(), "agent-1", "board-abc", "key", "tok", "mem", Some(&git_cfg))
-            .unwrap();
-        let cfg = AppConfig::load(f.path()).unwrap();
-        let git = cfg.artifact.unwrap().git.unwrap();
-        assert_eq!(git.path, "/tmp/artifacts");
-        assert_eq!(git.remote.as_deref(), Some("origin"));
-        assert_eq!(git.branch.as_deref(), Some("main"));
-    }
-
-    #[test]
-    fn write_config_file_artifact_with_ssh_key() {
-        let f = NamedTempFile::new().unwrap();
-        let git_cfg = ArtifactGitConfig {
-            path: "/tmp/artifacts".to_string(),
-            remote: Some("origin".to_string()),
-            branch: Some("main".to_string()),
-            ssh_key: Some("~/.ssh/id_ed25519".to_string()),
-            ssh_passphrase: None,
-            http_username: None,
-            http_password: None,
-        };
-        write_config_file(f.path(), "agent-1", "board-abc", "key", "tok", "mem", Some(&git_cfg))
-            .unwrap();
-        let cfg = AppConfig::load(f.path()).unwrap();
-        let git = cfg.artifact.unwrap().git.unwrap();
-        assert_eq!(git.ssh_key.as_deref(), Some("~/.ssh/id_ed25519"));
-    }
-
-    // --- 3.1: skipped artifact setup writes no artifact sections ---
-    #[test]
-    fn write_config_file_skipped_artifact_writes_no_artifact_section() {
-        let f = NamedTempFile::new().unwrap();
-        write_config_file(f.path(), "agent-1", "board-abc", "key", "tok", "mem", None).unwrap();
-        let content = std::fs::read_to_string(f.path()).unwrap();
-        assert!(!content.contains("[artifact]"));
-        let cfg = AppConfig::load(f.path()).unwrap();
-        assert!(cfg.artifact.is_none());
-    }
-
-    // --- 3.2: local-init path: missing dir is created, repo opens, config written with path only ---
-    #[test]
-    fn init_local_repo_creates_valid_git_repo() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo_path = dir.path().join("artifacts");
-        assert!(!repo_path.exists());
-        init_local_repo(&repo_path).unwrap();
-        assert!(repo_path.exists());
-        Repository::open(&repo_path).expect("should be a valid git repo");
-
-        let f = NamedTempFile::new().unwrap();
-        let git_cfg = ArtifactGitConfig {
-            path: repo_path.to_str().unwrap().to_string(),
-            remote: None,
-            branch: None,
-            ssh_key: None,
-            ssh_passphrase: None,
-            http_username: None,
-            http_password: None,
-        };
-        write_config_file(f.path(), "agent-1", "board-abc", "key", "tok", "mem", Some(&git_cfg))
-            .unwrap();
-        let cfg = AppConfig::load(f.path()).unwrap();
-        let git = cfg.artifact.unwrap().git.unwrap();
-        assert!(git.remote.is_none());
-        assert!(git.branch.is_none());
-    }
-
-    // --- 3.3: existing repo path accepted, config written with path only (no remote) ---
-    #[test]
-    fn open_existing_repo_accepts_valid_repo() {
-        let dir = tempfile::tempdir().unwrap();
-        Repository::init(dir.path()).unwrap();
-        let (remote, branch, ssh_key) = open_existing_repo(&dir.path().to_path_buf(), None).unwrap();
-        assert!(remote.is_none());
-        assert!(branch.is_none());
-        assert!(ssh_key.is_none());
-    }
-
-    #[test]
-    fn open_existing_repo_carries_over_remote_and_branch() {
-        let dir = tempfile::tempdir().unwrap();
-        Repository::init(dir.path()).unwrap();
-        let existing = ArtifactGitConfig {
-            path: dir.path().to_str().unwrap().to_string(),
-            remote: Some("origin".to_string()),
-            branch: Some("main".to_string()),
-            ssh_key: None,
-            ssh_passphrase: None,
-            http_username: None,
-            http_password: None,
-        };
-        let (remote, branch, ssh_key) =
-            open_existing_repo(&dir.path().to_path_buf(), Some(&existing)).unwrap();
-        assert_eq!(remote.as_deref(), Some("origin"));
-        assert_eq!(branch.as_deref(), Some("main"));
-        assert!(ssh_key.is_none());
-    }
-
-    #[test]
     fn write_linear_config_file_produces_valid_toml() {
         let f = NamedTempFile::new().unwrap();
-        write_linear_config_file(f.path(), "agent-1", "team-abc", "lin_api_xyz", None).unwrap();
+        write_linear_config_file(f.path(), "agent-1", "team-abc", "lin_api_xyz").unwrap();
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.agent.name, "agent-1");
         assert_eq!(cfg.board.backend, "linear");
@@ -767,31 +446,4 @@ mod tests {
         assert!(cfg.trello.is_none());
     }
 
-    #[test]
-    fn write_linear_config_file_no_artifact_section() {
-        let f = NamedTempFile::new().unwrap();
-        write_linear_config_file(f.path(), "agent-1", "team-abc", "lin_api_xyz", None).unwrap();
-        let cfg = AppConfig::load(f.path()).unwrap();
-        assert!(cfg.artifact.is_none());
-    }
-
-    #[test]
-    fn write_linear_config_file_with_artifact() {
-        let f = NamedTempFile::new().unwrap();
-        let git_cfg = ArtifactGitConfig {
-            path: "/tmp/artifacts".to_string(),
-            remote: Some("origin".to_string()),
-            branch: Some("main".to_string()),
-            ssh_key: None,
-            ssh_passphrase: None,
-            http_username: None,
-            http_password: None,
-        };
-        write_linear_config_file(f.path(), "agent-1", "team-abc", "lin_api_xyz", Some(&git_cfg)).unwrap();
-        let cfg = AppConfig::load(f.path()).unwrap();
-        let git = cfg.artifact.unwrap().git.unwrap();
-        assert_eq!(git.path, "/tmp/artifacts");
-        assert_eq!(git.remote.as_deref(), Some("origin"));
-        assert_eq!(git.branch.as_deref(), Some("main"));
-    }
 }

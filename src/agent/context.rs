@@ -1,4 +1,3 @@
-use crate::artifact::ArtifactStore;
 use crate::config::{AppConfig, LlmConfig, SubagentConfig};
 use crate::memory::MemoryStore;
 use crate::models::Ticket;
@@ -16,14 +15,13 @@ pub struct TicketContext {
 pub fn build_context(
     ticket: &Ticket,
     memory_store: &MemoryStore,
-    artifact_store: Option<&dyn ArtifactStore>,
     llm_cfg: &LlmConfig,
     app_cfg: &AppConfig,
     skill_ctx: Option<&SkillContext>,
     subagents: &[(String, String)],
 ) -> TicketContext {
     let system = build_system_prompt(ticket, app_cfg, skill_ctx, subagents);
-    let user = build_user_message(ticket, memory_store, artifact_store, llm_cfg);
+    let user = build_user_message(ticket, memory_store, llm_cfg);
     TicketContext { system, user }
 }
 
@@ -32,18 +30,21 @@ pub fn build_subagent_context(
     ticket: &Ticket,
     task: &str,
     memory_store: &MemoryStore,
-    artifact_store: Option<&dyn ArtifactStore>,
     llm_cfg: &LlmConfig,
     skill_ctx: Option<&SkillContext>,
 ) -> TicketContext {
     let system = build_subagent_system_prompt(subagent_cfg, skill_ctx);
-    let mut user = build_user_message(ticket, memory_store, artifact_store, llm_cfg);
+    let mut user = build_user_message(ticket, memory_store, llm_cfg);
     user.push_str(&format!("\n\n## Your Task\n{task}"));
     TicketContext { system, user }
 }
 
 fn build_subagent_system_prompt(subagent_cfg: &SubagentConfig, skill_ctx: Option<&SkillContext>) -> String {
     let mut parts: Vec<String> = Vec::new();
+
+    if let Some(ref prompt) = subagent_cfg.system_prompt {
+        parts.push(prompt.clone());
+    }
 
     let tools_list = subagent_cfg.tools.join(", ");
     parts.push(format!(
@@ -75,11 +76,11 @@ fn build_system_prompt(ticket: &Ticket, app_cfg: &AppConfig, skill_ctx: Option<&
     if subagents.is_empty() {
         parts.push(format!(
             "You are an AI agent named '{}' operating on a kanban board. \
-You communicate with teammates exclusively through ticket comments, artifact files, \
+You communicate with teammates exclusively through ticket comments, \
 checklists, and board actions. You are a first-class board member alongside humans.\n\
 \n\
 Available tools: comment, move_ticket, assign, create_sub, add_checklist_item, check_item, \
-set_memory, commit_artifact, get_artifact, compact, done, skip.\n\
+set_memory, compact, done, skip.\n\
 \n\
 Use `done(comment?)` when you have completed work on a ticket — this returns it to the creator.\n\
 Use `skip()` if the ticket is not actionable right now.",
@@ -135,8 +136,7 @@ Use `skip()` if the ticket is not actionable right now.",
 fn build_user_message(
     ticket: &Ticket,
     memory_store: &MemoryStore,
-    artifact_store: Option<&dyn ArtifactStore>,
-    llm_cfg: &LlmConfig,
+    _llm_cfg: &LlmConfig,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
 
@@ -193,45 +193,6 @@ fn build_user_message(
         parts.push(format!("\n## Agent Memory (private)\n{}", mem.context));
     }
 
-    if let Some(store) = artifact_store
-        && let Ok(metas) = store.list(&ticket.summary.id)
-            && !metas.is_empty() {
-                parts.push("\n## Artifacts".to_string());
-                let cap = llm_cfg.max_artifact_inline_bytes();
-                for meta in &metas {
-
-                    let inlined = if let Ok(Some(artifact)) = store.get(&ticket.summary.id, &meta.name) {
-                        let bytes = artifact.content.len();
-                        if bytes <= cap {
-                            Some(artifact.content)
-                        } else {
-                            parts.push(format!(
-                                "### {} (by @{}, {})\n*Content too large to inline ({} bytes > {} cap). Call `get_artifact(\"{}\")` to read.*",
-                                meta.name,
-                                meta.agent_name,
-                                meta.committed_at.format("%Y-%m-%d %H:%M"),
-                                bytes,
-                                cap,
-                                meta.name,
-                            ));
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    if let Some(content) = inlined {
-                        parts.push(format!(
-                            "### {} (by @{}, {})\n```\n{}\n```",
-                            meta.name,
-                            meta.agent_name,
-                            meta.committed_at.format("%Y-%m-%d %H:%M"),
-                            content,
-                        ));
-                    }
-                }
-            }
-
     parts.join("\n")
 }
 
@@ -239,9 +200,7 @@ fn build_user_message(
 mod tests {
     use super::*;
     use crate::config::{AgentConfig, AppConfig, BoardConfig, LlmConfig};
-    use crate::models::{
-        Artifact, ArtifactMeta, CommentCompaction, Member, Ticket, TicketSummary,
-    };
+    use crate::models::{CommentCompaction, Member, Ticket, TicketSummary};
     use chrono::Utc;
     use tempfile::tempdir;
 
@@ -275,7 +234,6 @@ mod tests {
             endpoint: None,
             poll_interval_secs: None,
             max_actions_per_ticket: None,
-            max_artifact_inline_bytes: Some(8192),
         }
     }
 
@@ -286,7 +244,6 @@ mod tests {
             trello: None,
             linear: None,
             memory: None,
-            artifact: None,
             logging: None,
             llm: None,
             workflow: vec![],
@@ -306,7 +263,7 @@ mod tests {
         let ticket = make_ticket("Fix the bug");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(ctx.user.contains("Test Ticket"));
         assert!(ctx.user.contains("Fix the bug"));
     }
@@ -316,7 +273,7 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(ctx.system.contains("bot-1"));
     }
 
@@ -326,7 +283,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
         mem.set("T-1", "remember this context").unwrap();
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(ctx.user.contains("remember this context"));
     }
 
@@ -335,7 +292,7 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(!ctx.user.contains("Agent Memory"));
     }
 
@@ -349,64 +306,8 @@ mod tests {
         });
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(ctx.user.contains("first 10 comments: auth work"));
-    }
-
-    struct InlineArtifactStore {
-        content: String,
-    }
-
-    impl ArtifactStore for InlineArtifactStore {
-        fn commit(&self, _ticket_id: &str, _name: &str, _content: &[u8]) -> Result<ArtifactMeta, crate::error::OrgaError> {
-            Err(crate::error::OrgaError::BackendError("mock".into()))
-        }
-        fn get(&self, _ticket_id: &str, name: &str) -> Result<Option<Artifact>, crate::error::OrgaError> {
-            Ok(Some(Artifact {
-                meta: ArtifactMeta {
-                    ticket_id: "T-1".to_string(),
-                    agent_name: "bot".to_string(),
-                    name: name.to_string(),
-                    committed_at: Utc::now(),
-                },
-                content: self.content.clone(),
-            }))
-        }
-        fn list(&self, _ticket_id: &str) -> Result<Vec<ArtifactMeta>, crate::error::OrgaError> {
-            Ok(vec![ArtifactMeta {
-                ticket_id: "T-1".to_string(),
-                agent_name: "bot".to_string(),
-                name: "report.md".to_string(),
-                committed_at: Utc::now(),
-            }])
-        }
-    }
-
-    #[test]
-    fn artifact_inlined_below_cap() {
-        let ticket = make_ticket("");
-        let dir = tempdir().unwrap();
-        let mem = open_memory(dir.path());
-        let store: Box<dyn ArtifactStore> = Box::new(InlineArtifactStore {
-            content: "small content".to_string(),
-        });
-        let ctx = build_context(&ticket, &mem, Some(store.as_ref()), &make_llm_cfg(), &make_app_cfg(), None, &[]);
-        assert!(ctx.user.contains("small content"));
-        assert!(!ctx.user.contains("too large"));
-    }
-
-    #[test]
-    fn artifact_metadata_only_above_cap() {
-        let ticket = make_ticket("");
-        let dir = tempdir().unwrap();
-        let mem = open_memory(dir.path());
-        let big = "x".repeat(9000);
-        let store: Box<dyn ArtifactStore> = Box::new(InlineArtifactStore { content: big });
-        let mut llm_cfg = make_llm_cfg();
-        llm_cfg.max_artifact_inline_bytes = Some(100);
-        let ctx = build_context(&ticket, &mem, Some(store.as_ref()), &llm_cfg, &make_app_cfg(), None, &[]);
-        assert!(ctx.user.contains("get_artifact"));
-        assert!(!ctx.user.contains("xxxxxxxxxx"));
     }
 
     #[test]
@@ -421,7 +322,7 @@ mod tests {
             ],
             active: vec![],
         };
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
         assert!(ctx.system.contains("## Available Skills"));
         assert!(ctx.system.contains("**code-review**"));
         assert!(ctx.system.contains("**security**"));
@@ -436,7 +337,7 @@ mod tests {
             available: vec![("code-review".to_string(), "Reviews code.".to_string())],
             active: vec![("code-review".to_string(), "Follow these steps to review code.".to_string())],
         };
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
         assert!(ctx.system.contains("## Active Skills"));
         assert!(ctx.system.contains("### code-review"));
         assert!(ctx.system.contains("Follow these steps to review code."));
@@ -447,7 +348,7 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
         assert!(!ctx.system.contains("## Available Skills"));
         assert!(!ctx.system.contains("## Active Skills"));
     }
@@ -461,7 +362,7 @@ mod tests {
             available: vec![("s".to_string(), "desc".to_string())],
             active: vec![],
         };
-        let ctx = build_context(&ticket, &mem, None, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
         assert!(ctx.system.contains("## Available Skills"));
         assert!(!ctx.system.contains("## Active Skills"));
     }

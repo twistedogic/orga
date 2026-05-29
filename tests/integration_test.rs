@@ -2,8 +2,6 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use orga::artifact::ArtifactStore;
-use orga::artifact::git::{GitArtifactStore, GitAuth};
 use orga::board::Board;
 use orga::error::OrgaError;
 use orga::logging::Logger;
@@ -477,92 +475,7 @@ mod live {
 use orga::memory::CompactionStore;
 use orga::models::CommentCompaction;
 
-use git2::{Repository, Signature};
-use std::path::Path;
 use tempfile::TempDir;
-
-fn init_git_repo(dir: &Path) {
-    let repo = Repository::init(dir).unwrap();
-    let sig = Signature::now("test", "test@orga").unwrap();
-    let tree_oid = {
-        let mut index = repo.index().unwrap();
-        index.write_tree().unwrap()
-    };
-    {
-        let tree = repo.find_tree(tree_oid).unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
-    }
-}
-
-fn make_git_store(dir: &Path, agent: &str) -> GitArtifactStore {
-    let logger = Arc::new(Logger::new(Path::new("/dev/null"), false));
-    GitArtifactStore::new(
-        dir.to_str().unwrap().to_string(),
-        agent.to_string(),
-        None,
-        "main".to_string(),
-        GitAuth::default(),
-        logger,
-    )
-}
-
-#[test]
-fn artifact_commit_inline_roundtrips_via_get() {
-    let tmp = TempDir::new().unwrap();
-    init_git_repo(tmp.path());
-    let store = make_git_store(tmp.path(), "agent-1");
-
-    store.commit("TICKET-42", "report.md", b"analysis complete").unwrap();
-    let artifact = store.get("TICKET-42", "report.md").unwrap().unwrap();
-
-    assert_eq!(artifact.content, "analysis complete");
-    assert_eq!(artifact.meta.ticket_id, "TICKET-42");
-    assert_eq!(artifact.meta.agent_name, "agent-1");
-    assert_eq!(artifact.meta.name, "report.md");
-}
-
-#[test]
-fn artifact_commit_file_content_is_stored() {
-    let tmp = TempDir::new().unwrap();
-    init_git_repo(tmp.path());
-    let store = make_git_store(tmp.path(), "agent-1");
-
-    let file_tmp = TempDir::new().unwrap();
-    let file_path = file_tmp.path().join("output.json");
-    std::fs::write(&file_path, b"{\"status\":\"done\"}").unwrap();
-    let content = std::fs::read(&file_path).unwrap();
-
-    store.commit("TICKET-42", "output.json", &content).unwrap();
-    let artifact = store.get("TICKET-42", "output.json").unwrap().unwrap();
-    assert_eq!(artifact.content, "{\"status\":\"done\"}");
-}
-
-#[test]
-fn artifact_list_shows_multiple_agents() {
-    let tmp = TempDir::new().unwrap();
-    init_git_repo(tmp.path());
-    let store1 = make_git_store(tmp.path(), "agent-1");
-    let store2 = make_git_store(tmp.path(), "agent-2");
-
-    store1.commit("TICKET-99", "summary.md", b"agent1 summary").unwrap();
-    store2.commit("TICKET-99", "summary.md", b"agent2 summary").unwrap();
-
-    let results = store1.list("TICKET-99").unwrap();
-    assert_eq!(results.len(), 2);
-    let agents: Vec<&str> = results.iter().map(|m| m.agent_name.as_str()).collect();
-    assert!(agents.contains(&"agent-1"));
-    assert!(agents.contains(&"agent-2"));
-}
-
-#[test]
-fn artifact_get_missing_returns_none() {
-    let tmp = TempDir::new().unwrap();
-    init_git_repo(tmp.path());
-    let store = make_git_store(tmp.path(), "agent-1");
-
-    let result = store.get("TICKET-99", "nonexistent.md").unwrap();
-    assert!(result.is_none());
-}
 
 // ── Compaction logic tests ─────────────────────────────────────────────────
 

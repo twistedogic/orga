@@ -3,7 +3,6 @@ use std::sync::Arc;
 use rig_core::completion::ToolDefinition;
 use serde::Deserialize;
 
-use crate::artifact::ArtifactStore;
 use crate::board::Board;
 use crate::logging::Logger;
 use crate::memory::{CompactionStore, MemoryStore};
@@ -13,7 +12,6 @@ pub struct ToolContext {
     pub ticket_id: String,
     pub board: Box<dyn Board>,
     pub memory_store: MemoryStore,
-    pub artifact_store: Option<Box<dyn ArtifactStore>>,
     pub compaction_store: CompactionStore,
     pub dry_run: bool,
     pub logger: Arc<Logger>,
@@ -41,8 +39,6 @@ pub async fn dispatch(tool_name: &str, args: &str, ctx: &ToolContext) -> String 
         "assign" => dispatch_assign(args, ctx).await,
         "create_sub" => dispatch_create_sub(args, ctx).await,
         "set_memory" => dispatch_set_memory(args, ctx).await,
-        "commit_artifact" => dispatch_commit_artifact(args, ctx).await,
-        "get_artifact" => dispatch_get_artifact(args, ctx).await,
         "compact" => dispatch_compact(args, ctx).await,
         "done" => dispatch_done(args, ctx).await,
         "skip" => "skip".to_string(),
@@ -161,52 +157,6 @@ async fn dispatch_set_memory(args: &str, ctx: &ToolContext) -> String {
     }
     match ctx.memory_store.set(&ctx.ticket_id, &parsed.context) {
         Ok(()) => "memory saved".to_string(),
-        Err(e) => format!("error: {e}"),
-    }
-}
-
-#[derive(Deserialize)]
-struct CommitArtifactArgs {
-    name: String,
-    content: String,
-}
-
-async fn dispatch_commit_artifact(args: &str, ctx: &ToolContext) -> String {
-    let parsed: CommitArtifactArgs = match serde_json::from_str(args) {
-        Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
-    };
-    log_action!(ctx, ctx.dry_run, format!("commit artifact '{}' for {}", parsed.name, ctx.ticket_id));
-    if ctx.dry_run {
-        return dry_run_msg(&format!("commit artifact '{}' for {}", parsed.name, ctx.ticket_id));
-    }
-    let store = match &ctx.artifact_store {
-        Some(s) => s,
-        None => return "error: artifact store not configured".to_string(),
-    };
-    match store.commit(&ctx.ticket_id, &parsed.name, parsed.content.as_bytes()) {
-        Ok(meta) => format!("artifact '{}' committed at {}", meta.name, meta.committed_at.format("%Y-%m-%d %H:%M")),
-        Err(e) => format!("error: {e}"),
-    }
-}
-
-#[derive(Deserialize)]
-struct GetArtifactArgs {
-    name: String,
-}
-
-async fn dispatch_get_artifact(args: &str, ctx: &ToolContext) -> String {
-    let parsed: GetArtifactArgs = match serde_json::from_str(args) {
-        Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
-    };
-    let store = match &ctx.artifact_store {
-        Some(s) => s,
-        None => return "error: artifact store not configured".to_string(),
-    };
-    match store.get(&ctx.ticket_id, &parsed.name) {
-        Ok(Some(artifact)) => artifact.content,
-        Ok(None) => format!("error: artifact '{}' not found", parsed.name),
         Err(e) => format!("error: {e}"),
     }
 }
@@ -332,29 +282,6 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "context": { "type": "string", "description": "Context text to store" }
                 },
                 "required": ["context"]
-            }),
-        },
-        ToolDefinition {
-            name: "commit_artifact".to_string(),
-            description: "Commit a named artifact (file) for this ticket. Content is stored as text.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Artifact filename (e.g. report.md)" },
-                    "content": { "type": "string", "description": "File content as text" }
-                },
-                "required": ["name", "content"]
-            }),
-        },
-        ToolDefinition {
-            name: "get_artifact".to_string(),
-            description: "Retrieve the content of a named artifact for this ticket.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Artifact filename to retrieve" }
-                },
-                "required": ["name"]
             }),
         },
         ToolDefinition {
@@ -549,7 +476,6 @@ mod tests {
             ticket_id: "T-1".to_string(),
             board: Box::new(MockBoard::new()),
             memory_store: MemoryStore::open(&db_path).unwrap(),
-            artifact_store: None,
             compaction_store: CompactionStore::open(&db_path).unwrap(),
             dry_run,
             logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
@@ -586,13 +512,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_commit_artifact_dry_run() {
-        let ctx = make_ctx(true);
-        let result = dispatch("commit_artifact", r#"{"name":"r.md","content":"data"}"#, &ctx).await;
-        assert!(result.contains("[dry-run]"));
-    }
-
-    #[tokio::test]
     async fn dispatch_done_dry_run() {
         let ctx = make_ctx(true);
         let result = dispatch("done", r#"{}"#, &ctx).await;
@@ -604,13 +523,6 @@ mod tests {
         let ctx = make_ctx(false);
         let result = dispatch("skip", r#"{}"#, &ctx).await;
         assert_eq!(result, "skip");
-    }
-
-    #[tokio::test]
-    async fn dispatch_get_artifact_executes_even_in_dry_run() {
-        let ctx = make_ctx(true);
-        let result = dispatch("get_artifact", r#"{"name":"r.md"}"#, &ctx).await;
-        assert!(result.contains("error: artifact store not configured"));
     }
 
     #[tokio::test]

@@ -37,14 +37,6 @@ board_id = "board-xyz"
 [memory]
 path = "~/.orga/memory.db"
 
-[artifact]
-backend = "git"
-
-[artifact.git]
-path = "~/.orga/artifacts"
-remote = "origin"
-branch = "main"
-
 [logging]
 file = "~/.orga/orga.log"
 debug = false
@@ -64,13 +56,12 @@ model = "claude-opus-4-5"           # required
 endpoint = "https://..."            # optional: overrides provider default base URL
 poll_interval_secs = 60             # optional: default 60
 max_actions_per_ticket = 10         # optional: default 10
-max_artifact_inline_bytes = 8192    # optional: default 8192
 
 [skills]
 path = "~/.orga/skills"             # optional: path to skills folder
 ```
 
-All fields under `[agent]`, `[board]`, and the backend-specific section SHALL be required. The `[memory]` section is optional; if absent, the default path is used. The `member_id` field SHALL live under `[trello]`, not `[agent]`. The `[artifact]` section is optional; if absent, artifact commands fail with a clear config error. Within `[artifact.git]`, `path` is required; `remote` and `branch` are optional (defaulting to no remote and `"main"` respectively). The `[logging]` section is optional; if absent, `file` defaults to `~/.orga/orga.log` and `debug` defaults to `false`. The `[[workflow]]` section is optional; if absent, no workflow prompts are injected. Each `[[workflow]]` entry requires `column` and exactly one of `prompt` or `prompt_file`. The `[llm]` section is optional; if absent, `orga agent` fails with a clear config error; all other commands are unaffected. The `[skills]` section is optional; if absent, no skills are loaded and the system prompt contains no skills sections.
+All fields under `[agent]`, `[board]`, and the backend-specific section SHALL be required. The `[memory]` section is optional; if absent, the default path is used. The `member_id` field SHALL live under `[trello]`, not `[agent]`. The `[logging]` section is optional; if absent, `file` defaults to `~/.orga/orga.log` and `debug` defaults to `false`. The `[[workflow]]` section is optional; if absent, no workflow prompts are injected. Each `[[workflow]]` entry requires `column` and exactly one of `prompt` or `prompt_file`. The `[llm]` section is optional; if absent, `orga agent` fails with a clear config error; all other commands are unaffected. The `[skills]` section is optional; if absent, no skills are loaded and the system prompt contains no skills sections.
 
 #### Scenario: Valid config
 - **WHEN** a valid config file is loaded
@@ -87,14 +78,6 @@ All fields under `[agent]`, `[board]`, and the backend-specific section SHALL be
 #### Scenario: Config without skills section
 - **WHEN** no `[skills]` section is present
 - **THEN** the agent runs without skills; no skills sections appear in system prompts
-
-#### Scenario: Config with artifact section
-- **WHEN** a config file includes a valid `[artifact]` and `[artifact.git]` section
-- **THEN** `build_artifact_store` succeeds and returns a `GitArtifactStore`
-
-#### Scenario: Config without artifact section
-- **WHEN** the config file does not include `[artifact]`
-- **THEN** artifact commands fail with a config error; all other commands are unaffected
 
 #### Scenario: Config with workflow section
 - **WHEN** a config file includes valid `[[workflow]]` entries
@@ -142,6 +125,8 @@ The CLI SHALL validate the config at startup before executing any command. Unkno
 ### Requirement: Subagents config section
 The config file SHALL support zero or more `[[subagents]]` blocks. Each block SHALL have `name` (unique string, required), `description` (string, required), and `tools` (array of tool name strings, required). Each block MAY additionally have `skills` (array of skill name strings), `model` (string, LLM model override), and `max_actions` (integer, action cap override). Config validation SHALL reject duplicate subagent names and unknown tool names.
 
+In addition, the system SHALL load subagent definitions from `*.md` files in an `agents/` directory adjacent to the config file (see `subagent-markdown-loader` spec). Markdown agents are appended to the TOML-defined subagent list after parsing. The combined list (TOML + markdown) is subject to all existing validation rules.
+
 #### Scenario: Subagents section parsed from config
 - **WHEN** the config file contains one or more `[[subagents]]` blocks
 - **THEN** they are deserialized into a list of `SubagentConfig` and available to the agent loop
@@ -157,6 +142,14 @@ The config file SHALL support zero or more `[[subagents]]` blocks. Each block SH
 #### Scenario: Validation rejects unknown tool names in subagent
 - **WHEN** a `[[subagents]]` block lists a tool name that does not exist (e.g., `tools = ["fly"]`)
 - **THEN** config validation fails with a descriptive error at startup
+
+#### Scenario: Markdown agents loaded alongside TOML subagents
+- **WHEN** the config has a TOML `[[subagents]]` entry and an `agents/` directory with a valid `.md` file
+- **THEN** both are loaded and merged into a single subagent list
+
+#### Scenario: Markdown-only subagents (no TOML subagents)
+- **WHEN** the config has no `[[subagents]]` blocks but has a valid `agents/*.md` file
+- **THEN** the markdown agent is loaded and available to the agent loop
 
 ### Requirement: Workspace config section
 The config file SHALL support an optional `[workspace]` section with a `path` key specifying the base directory for all ticket workspaces. If omitted, workspace tools are unavailable.

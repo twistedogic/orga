@@ -14,8 +14,6 @@ The agent loop SHALL expose the following tools to the LLM during a ticket cycle
 | `assign(username)` | subagent (if configured) | yes | `board.assign()` |
 | `create_sub(title)` | subagent (if configured) | yes | `board.create_sub()` |
 | `set_memory(context)` | main agent + subagent (if configured) | yes | `memory_store.set()` |
-| `commit_artifact(name, content)` | subagent (if configured) | yes | `artifact_store.commit()` |
-| `get_artifact(name)` | subagent (if configured) | no | `artifact_store.get()` |
 | `compact(summary)` | main agent + subagent (if configured) | yes | `compaction_store.set()` |
 | `dispatch(subagent, task)` | main agent | yes | runs subagent loop |
 | `return(result)` | subagent | no | terminates subagent loop |
@@ -26,10 +24,6 @@ The agent loop SHALL expose the following tools to the LLM during a ticket cycle
 - **WHEN** subagents are configured and the main agent loop runs
 - **THEN** the LLM only sees `comment`, `dispatch`, `skip`, `done`, `set_memory`, `compact` in tool definitions
 
-#### Scenario: Subagent tool set from config
-- **WHEN** a subagent with `tools = ["get_artifact", "commit_artifact"]` runs its loop
-- **THEN** the LLM only sees `get_artifact`, `commit_artifact`, and `return` in tool definitions
-
 #### Scenario: Full tool set when no subagents configured
 - **WHEN** no subagents are configured
 - **THEN** the full tool set (all original tools) is exposed to the LLM unchanged
@@ -39,8 +33,8 @@ The agent loop SHALL expose the following tools to the LLM during a ticket cycle
 - **THEN** `board.comment(ticket_id, text)` is called and the result is returned to the LLM
 
 #### Scenario: done tool returns ticket
-- **WHEN** the LLM calls `done(comment: "work complete, see artifact report.md")`
-- **THEN** `board.return_ticket(ticket_id, Some("work complete, see artifact report.md"))` is called and the cycle ends
+- **WHEN** the LLM calls `done(comment: "work complete")`
+- **THEN** `board.return_ticket(ticket_id, Some("work complete"))` is called and the cycle ends
 
 #### Scenario: done tool without comment
 - **WHEN** the LLM calls `done()` with no comment
@@ -49,14 +43,6 @@ The agent loop SHALL expose the following tools to the LLM during a ticket cycle
 #### Scenario: skip tool ends cycle silently
 - **WHEN** the LLM calls `skip()`
 - **THEN** no board mutation occurs and the cycle ends
-
-#### Scenario: get_artifact executes in dry-run
-- **WHEN** dry-run is active and the LLM calls `get_artifact(name: "report.md")`
-- **THEN** the artifact is fetched and returned to the LLM (read tools are not suppressed)
-
-#### Scenario: commit_artifact suppressed in dry-run
-- **WHEN** dry-run is active and the LLM calls `commit_artifact(name: "report.md", content: "...")`
-- **THEN** the action is logged but not executed; a dry-run notice is returned as the tool result
 
 ### Requirement: Tool error handling
 If a tool call fails (e.g., invalid ticket ID, network error, artifact not found), the error SHALL be returned as a `tool_result` with `is_error: true`. The cycle SHALL continue within the cap.
@@ -90,19 +76,11 @@ The subagent tool set SHALL include a `return(result)` terminal tool. Calling it
 ### Requirement: Ticket context construction
 Before the first LLM turn, the loop SHALL construct the ticket context as follows:
 - System prompt: workflow prompt for the ticket's current column (if configured) + agent identity
-- User message: ticket fields (id, title, description, list, url, assignees, creator), checklists, comments (with compaction applied if present), current memory (if any), artifact list with inline content up to `max_artifact_inline_bytes` per artifact (metadata only above the cap)
+- User message: ticket fields (id, title, description, list, url, assignees, creator), checklists, comments (with compaction applied if present), current memory (if any)
 
 #### Scenario: Workflow prompt injected
 - **WHEN** a workflow entry matches the ticket's column
 - **THEN** the system prompt includes the workflow prompt text
-
-#### Scenario: Artifact content inlined below cap
-- **WHEN** an artifact's content is below `max_artifact_inline_bytes`
-- **THEN** its full content is included in the user message
-
-#### Scenario: Artifact metadata only above cap
-- **WHEN** an artifact's content exceeds `max_artifact_inline_bytes`
-- **THEN** only its metadata (name, size, committed_at) is included; the LLM may call `get_artifact` to retrieve it
 
 ### Requirement: File tools
 The agent loop SHALL expose `read_file`, `write_file`, and `list_files` tools when `[workspace]` is configured. These tools SHALL be available to subagents via their `tools` list. In dry-run mode, `write_file` SHALL be logged but not executed; `read_file` and `list_files` SHALL execute normally.

@@ -36,17 +36,6 @@ pub struct MemoryConfig {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ArtifactGitConfig {
-    pub path: String,
-    pub remote: Option<String>,
-    pub branch: Option<String>,
-    pub ssh_key: Option<String>,
-    pub ssh_passphrase: Option<String>,
-    pub http_username: Option<String>,
-    pub http_password: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct WorkflowEntry {
     pub column: String,
     pub prompt: Option<String>,
@@ -72,18 +61,23 @@ pub struct SubagentConfig {
     pub skills: Vec<String>,
     pub model: Option<String>,
     pub max_actions: Option<usize>,
+    pub system_prompt: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubagentFrontmatter {
+    description: Option<String>,
+    #[serde(default)]
+    tools: Vec<String>,
+    #[serde(default)]
+    skills: Vec<String>,
+    max_actions: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct LoggingConfig {
     pub file: Option<String>,
     pub debug: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ArtifactConfig {
-    pub backend: String,
-    pub git: Option<ArtifactGitConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,7 +88,6 @@ pub struct LlmConfig {
     pub endpoint: Option<String>,
     pub poll_interval_secs: Option<u64>,
     pub max_actions_per_ticket: Option<usize>,
-    pub max_artifact_inline_bytes: Option<usize>,
 }
 
 impl LlmConfig {
@@ -106,9 +99,6 @@ impl LlmConfig {
         self.max_actions_per_ticket.unwrap_or(10)
     }
 
-    pub fn max_artifact_inline_bytes(&self) -> usize {
-        self.max_artifact_inline_bytes.unwrap_or(8192)
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,7 +108,6 @@ pub struct AppConfig {
     pub trello: Option<TrelloConfig>,
     pub linear: Option<LinearConfig>,
     pub memory: Option<MemoryConfig>,
-    pub artifact: Option<ArtifactConfig>,
     pub logging: Option<LoggingConfig>,
     pub llm: Option<LlmConfig>,
     #[serde(default)]
@@ -145,6 +134,17 @@ impl AppConfig {
         })?;
         let mut config: AppConfig = toml::from_str(&content)
             .map_err(|e| OrgaError::ConfigError(format!("invalid config: {e}")))?;
+        if content.contains("[artifact]") || content.contains("[artifact.git]") {
+            return Err(OrgaError::ConfigError(
+                "[artifact] section is no longer supported; use [workspace] for per-ticket file storage".into(),
+            ));
+        }
+        if let Some(parent) = path.parent() {
+            let agents_dir = parent.join("agents");
+            let logger = config.logger();
+            let md_agents = load_markdown_agents(&agents_dir, &logger);
+            config.subagents.extend(md_agents);
+        }
         config.validate()?;
         Ok(config)
     }
@@ -255,7 +255,7 @@ impl AppConfig {
         // Validate subagents
         const VALID_TOOLS: &[&str] = &[
             "comment", "move_ticket", "assign", "create_sub", "set_memory",
-            "commit_artifact", "get_artifact", "compact", "done", "skip",
+            "compact", "done", "skip",
             "dispatch", "return", "read_file", "write_file", "list_files",
         ];
         let mut seen_names = std::collections::HashSet::new();
@@ -335,6 +335,85 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     } else {
         PathBuf::from(path)
     }
+}
+
+fn load_markdown_agents(agents_dir: &Path, logger: &Logger) -> Vec<SubagentConfig> {
+    let entries = match fs::read_dir(agents_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut agents = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+
+        let name = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                logger.warn(&format!("[agents] failed to read {}: {e}", path.display()));
+                continue;
+            }
+        };
+
+        match parse_markdown_agent(&name, &content) {
+            Ok(agent) => agents.push(agent),
+            Err(e) => {
+                logger.warn(&format!("[agents] skipping {}: {e}", path.display()));
+            }
+        }
+    }
+
+    agents
+}
+
+fn parse_markdown_agent(name: &str, content: &str) -> Result<SubagentConfig, String> {
+    let (frontmatter_str, body) = split_frontmatter(content)?;
+
+    let fm: SubagentFrontmatter = serde_yaml::from_str(frontmatter_str)
+        .map_err(|e| format!("invalid frontmatter YAML: {e}"))?;
+
+    let description = fm
+        .description
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| "missing required field: description".to_string())?;
+
+    Ok(SubagentConfig {
+        name: name.to_string(),
+        description,
+        tools: fm.tools,
+        skills: fm.skills,
+        model: None,
+        max_actions: fm.max_actions,
+        system_prompt: if body.trim().is_empty() {
+            None
+        } else {
+            Some(body.trim().to_string())
+        },
+    })
+}
+
+fn split_frontmatter(content: &str) -> Result<(&str, &str), String> {
+    if !content.starts_with("---") {
+        return Err("missing frontmatter: file must start with '---'".to_string());
+    }
+    let after_first = &content[3..];
+    let rest = after_first.strip_prefix('\n').unwrap_or(after_first);
+    let close = rest
+        .find("\n---")
+        .ok_or_else(|| "missing closing '---' in frontmatter".to_string())?;
+    let yaml = &rest[..close];
+    let body = &rest[close + 4..]; // skip "\n---"
+    let body = body.strip_prefix('\n').unwrap_or(body);
+    Ok((yaml, body))
 }
 
 #[cfg(test)]
@@ -431,40 +510,6 @@ backend = "trello"
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.memory_db_path(), PathBuf::from("/tmp/test.db"));
-    }
-
-    #[test]
-    fn artifact_config_absent() {
-        let f = write_config(VALID_CONFIG);
-        let cfg = AppConfig::load(f.path()).unwrap();
-        assert!(cfg.artifact.is_none());
-    }
-
-    #[test]
-    fn artifact_config_git_section() {
-        let content = format!(
-            "{VALID_CONFIG}\n[artifact]\nbackend = \"git\"\n\n[artifact.git]\npath = \"/tmp/artifacts\"\n"
-        );
-        let f = write_config(&content);
-        let cfg = AppConfig::load(f.path()).unwrap();
-        let artifact = cfg.artifact.unwrap();
-        assert_eq!(artifact.backend, "git");
-        let git = artifact.git.unwrap();
-        assert_eq!(git.path, "/tmp/artifacts");
-        assert!(git.remote.is_none());
-        assert!(git.branch.is_none());
-    }
-
-    #[test]
-    fn artifact_config_git_with_remote_and_branch() {
-        let content = format!(
-            "{VALID_CONFIG}\n[artifact]\nbackend = \"git\"\n\n[artifact.git]\npath = \"/tmp/artifacts\"\nremote = \"origin\"\nbranch = \"main\"\n"
-        );
-        let f = write_config(&content);
-        let cfg = AppConfig::load(f.path()).unwrap();
-        let git = cfg.artifact.unwrap().git.unwrap();
-        assert_eq!(git.remote.as_deref(), Some("origin"));
-        assert_eq!(git.branch.as_deref(), Some("main"));
     }
 
     #[test]
@@ -700,7 +745,6 @@ model = "claude-opus-4-5"
         let llm = cfg.llm.as_ref().unwrap();
         assert_eq!(llm.poll_interval_secs(), 60);
         assert_eq!(llm.max_actions_per_ticket(), 10);
-        assert_eq!(llm.max_artifact_inline_bytes(), 8192);
     }
 
     #[test]
@@ -760,7 +804,7 @@ model = "claude-opus-4-5"
 
     #[test]
     fn subagent_config_with_optional_fields() {
-        let content = format!("{VALID_CONFIG}\n[[subagents]]\nname = \"drafter\"\ndescription = \"Drafts content\"\ntools = [\"commit_artifact\"]\nskills = [\"writing\"]\nmodel = \"gpt-4o\"\nmax_actions = 20\n");
+        let content = format!("{VALID_CONFIG}\n[[subagents]]\nname = \"drafter\"\ndescription = \"Drafts content\"\ntools = [\"comment\"]\nskills = [\"writing\"]\nmodel = \"gpt-4o\"\nmax_actions = 20\n");
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.subagents[0].model.as_deref(), Some("gpt-4o"));
@@ -789,5 +833,51 @@ model = "claude-opus-4-5"
         let f = write_config(VALID_CONFIG);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert!(cfg.subagents.is_empty());
+    }
+
+    // --- markdown agent tests ---
+
+    #[test]
+    fn markdown_agent_all_fields_loads_correctly() {
+        let content = "---\ndescription: Does research\ntools:\n  - comment\n  - done\nskills:\n  - rust\nmax_actions: 5\n---\nYou are a researcher.\n";
+        let agent = parse_markdown_agent("researcher", content).unwrap();
+        assert_eq!(agent.name, "researcher");
+        assert_eq!(agent.description, "Does research");
+        assert_eq!(agent.tools, vec!["comment", "done"]);
+        assert_eq!(agent.skills, vec!["rust"]);
+        assert_eq!(agent.max_actions, Some(5));
+        assert_eq!(agent.system_prompt.as_deref(), Some("You are a researcher."));
+    }
+
+    #[test]
+    fn markdown_agent_description_only_uses_defaults() {
+        let content = "---\ndescription: Simple agent\n---\n";
+        let agent = parse_markdown_agent("simple", content).unwrap();
+        assert_eq!(agent.description, "Simple agent");
+        assert!(agent.tools.is_empty());
+        assert!(agent.skills.is_empty());
+        assert!(agent.max_actions.is_none());
+        assert!(agent.system_prompt.is_none());
+    }
+
+    #[test]
+    fn markdown_agent_missing_description_skips() {
+        let content = "---\ntools:\n  - comment\n---\nSome prompt.\n";
+        let err = parse_markdown_agent("bot", content).unwrap_err();
+        assert!(err.contains("description"));
+    }
+
+    #[test]
+    fn markdown_agent_malformed_yaml_skips() {
+        let content = "---\n: invalid: yaml: {{\n---\nSome prompt.\n";
+        let err = parse_markdown_agent("bot", content).unwrap_err();
+        assert!(err.contains("YAML") || err.contains("yaml") || err.contains("frontmatter"));
+    }
+
+    #[test]
+    fn markdown_agent_missing_agents_dir_returns_empty() {
+        let logger = Logger::new(Path::new("/dev/null"), false);
+        let result = load_markdown_agents(Path::new("/nonexistent/agents"), &logger);
+        assert!(result.is_empty());
     }
 }

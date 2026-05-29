@@ -9,7 +9,6 @@ use std::time::Duration;
 use rig_core::client::CompletionClient;
 use rig_core::completion::{AssistantContent, CompletionModel, CompletionRequestBuilder, Message};
 
-use crate::artifact::build_artifact_store;
 use crate::board::build_board;
 use crate::config::AppConfig;
 use crate::error::OrgaError;
@@ -18,7 +17,7 @@ use crate::memory::{CompactionStore, MemoryStore};
 use crate::workspace::WorkspaceStore;
 
 use config::{LlmClient, build_llm_client};
-use context::{SkillContext, build_context, build_subagent_context};
+use context::{SkillContext, build_context};
 use skills::{SkillMeta, match_skills, scan_skills};
 use tools::{ToolContext, dispatch, is_terminal_tool, tool_definitions, tool_definitions_for};
 
@@ -120,7 +119,6 @@ where
     let db_path = config.memory_db_path();
     let memory_store = MemoryStore::open(&db_path)?;
     let compaction_store = CompactionStore::open(&db_path)?;
-    let artifact_store_opt = build_artifact_store(config, Arc::clone(&logger)).ok();
 
     let mut ticket = board.get_ticket(ticket_id)?;
 
@@ -153,7 +151,6 @@ where
         build_context(
             &ticket,
             &memory_store,
-            artifact_store_opt.as_deref(),
             llm_cfg,
             config,
             skill_ctx.as_ref(),
@@ -231,13 +228,11 @@ where
         let tool_board = build_board(config, Arc::clone(&logger))?;
         let tool_memory = MemoryStore::open(&db_path)?;
         let tool_compaction = CompactionStore::open(&db_path)?;
-        let tool_artifact = build_artifact_store(config, Arc::clone(&logger)).ok();
 
         let tool_ctx = ToolContext {
             ticket_id: ticket_id.to_string(),
             board: tool_board,
             memory_store: tool_memory,
-            artifact_store: tool_artifact,
             compaction_store: tool_compaction,
             dry_run,
             logger: Arc::clone(&logger),
@@ -250,7 +245,7 @@ where
             let args = tc.function.arguments.to_string();
 
             logger.info(&format!("[agent] ticket {ticket_id}: calling tool '{name}'"));
-            if dry_run && name != "get_artifact" {
+            if dry_run {
                 println!("[dry-run] would call tool '{name}' with args: {args}");
             }
 
@@ -327,7 +322,6 @@ where
         Ok(m) => m,
         Err(e) => return format!("error opening memory: {e}"),
     };
-    let artifact_store = build_artifact_store(config, Arc::clone(&logger)).ok();
 
     // Build skill context for subagent
     let all_skills = config.skills_path().map(|path| scan_skills(&path, &logger)).unwrap_or_default();
@@ -350,7 +344,6 @@ where
         ticket,
         task,
         &memory_store,
-        artifact_store.as_deref(),
         llm_cfg,
         skill_ctx.as_ref(),
     );
@@ -426,13 +419,11 @@ where
             Ok(c) => c,
             Err(e) => return format!("error opening compaction: {e}"),
         };
-        let tool_artifact = build_artifact_store(config, Arc::clone(&logger)).ok();
 
         let tool_ctx = ToolContext {
             ticket_id: ticket.summary.id.clone(),
             board: tool_board,
             memory_store: tool_memory,
-            artifact_store: tool_artifact,
             compaction_store: tool_compaction,
             dry_run,
             logger: Arc::clone(&logger),
