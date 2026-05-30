@@ -13,7 +13,6 @@ pub trait Board {
     fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError>;
     fn comment(&self, id: &str, text: &str) -> Result<(), OrgaError>;
     fn assign(&self, id: &str, username: &str) -> Result<(), OrgaError>;
-    fn move_ticket(&self, id: &str, list: &str) -> Result<(), OrgaError>;
     fn create_sub(&self, parent_id: &str, title: &str, description: Option<&str>, list: Option<&str>) -> Result<Ticket, OrgaError>;
     fn list_columns(&self) -> Result<Vec<Column>, OrgaError>;
     fn whoami(&self) -> Result<Member, OrgaError>;

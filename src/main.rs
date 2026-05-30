@@ -82,13 +82,6 @@ enum TicketCommands {
         #[arg(help = "Board username (e.g. @alice or alice)")]
         username: String,
     },
-    #[command(about = "Move a ticket to a different list (column) by name")]
-    Move {
-        #[arg(help = "Ticket ID")]
-        id: String,
-        #[arg(help = "Target list name (e.g. \"In Progress\")")]
-        list: String,
-    },
     #[command(about = "Create a sub-ticket linked to a parent ticket")]
     CreateSub {
         #[arg(help = "Parent ticket ID")]
@@ -301,14 +294,6 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                         println!("{}", json!({"ok": true}));
                     } else {
                         println!("assigned {username} to {id}");
-                    }
-                }
-                TicketCommands::Move { id, list } => {
-                    board.move_ticket(&id, &list)?;
-                    if cli.json {
-                        println!("{}", json!({"ok": true}));
-                    } else {
-                        println!("moved {id} to '{list}'");
                     }
                 }
                 TicketCommands::CreateSub { parent_id, title, description, list } => {

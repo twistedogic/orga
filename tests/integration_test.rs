@@ -49,10 +49,6 @@ impl Board for MockBoard {
         Ok(())
     }
 
-    fn move_ticket(&self, _id: &str, _list: &str) -> Result<(), OrgaError> {
-        Ok(())
-    }
-
     fn create_sub(&self, parent_id: &str, title: &str, _description: Option<&str>, _list: Option<&str>) -> Result<Ticket, OrgaError> {
         let _parent = self.get_ticket(parent_id)?;
         Ok(Ticket {

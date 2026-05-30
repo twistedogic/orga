@@ -115,15 +115,6 @@ impl LinearBackend {
         })
     }
 
-    fn resolve_state_id(&self, state_name: &str) -> Result<String, OrgaError> {
-        let states = self.team_states()?;
-        states
-            .into_iter()
-            .find(|s| s.name.eq_ignore_ascii_case(state_name))
-            .map(|s| s.id)
-            .ok_or_else(|| OrgaError::NotFound(format!("workflow state '{state_name}'")))
-    }
-
     fn team_states(&self) -> Result<Vec<LinearState>, OrgaError> {
         #[derive(Deserialize)]
         struct Resp {
@@ -378,19 +369,6 @@ impl Board for LinearBackend {
         }
         let query = format!("mutation($body: String!) {{ commentCreate(input: {{ issueId: \"{id}\", body: $body }}) {{ success }} }}");
         let _: Resp = self.gql(&query, serde_json::json!({ "body": tagged }))?;
-        Ok(())
-    }
-
-    fn move_ticket(&self, id: &str, list: &str) -> Result<(), OrgaError> {
-        let state_id = self.resolve_state_id(list)?;
-        #[derive(Deserialize)]
-        #[allow(dead_code)]
-        struct Resp {
-            #[serde(rename = "issueUpdate")]
-            issue_update: SuccessResp,
-        }
-        let query = format!("mutation {{ issueUpdate(id: \"{id}\", input: {{ stateId: \"{state_id}\" }}) {{ success }} }}");
-        let _: Resp = self.gql(&query, serde_json::json!({}))?;
         Ok(())
     }
 

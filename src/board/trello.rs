@@ -55,14 +55,6 @@ impl TrelloBackend {
         serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))
     }
 
-    fn put_form(&self, url: &str, params: &[(&str, &str)]) -> Result<serde_json::Value, OrgaError> {
-        let mut all: Vec<(&str, &str)> = self.auth_params().to_vec();
-        all.extend_from_slice(params);
-        let resp = self.client.put(url).query(&all).send()?;
-        let body = self.handle_response(resp)?;
-        serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))
-    }
-
     fn handle_response(&self, resp: reqwest::blocking::Response) -> Result<String, OrgaError> {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();
@@ -90,15 +82,6 @@ impl TrelloBackend {
     fn board_lists(&self) -> Result<Vec<TrelloList>, OrgaError> {
         let url = format!("https://api.trello.com/1/boards/{}/lists", self.board_id);
         self.get(&url)
-    }
-
-    fn resolve_list_id(&self, list_name: &str) -> Result<String, OrgaError> {
-        let lists = self.board_lists()?;
-        lists
-            .into_iter()
-            .find(|l| l.name.eq_ignore_ascii_case(list_name))
-            .map(|l| l.id)
-            .ok_or_else(|| OrgaError::NotFound(format!("list '{list_name}'")))
     }
 
     fn resolve_member_id(&self, username: &str) -> Result<String, OrgaError> {
@@ -319,13 +302,6 @@ impl Board for TrelloBackend {
         let member_id = self.resolve_member_id(username)?;
         let url = format!("https://api.trello.com/1/cards/{id}/idMembers");
         self.post_form(&url, &[("value", &member_id)])?;
-        Ok(())
-    }
-
-    fn move_ticket(&self, id: &str, list: &str) -> Result<(), OrgaError> {
-        let list_id = self.resolve_list_id(list)?;
-        let url = format!("https://api.trello.com/1/cards/{id}");
-        self.put_form(&url, &[("idList", &list_id)])?;
         Ok(())
     }
 

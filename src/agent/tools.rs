@@ -35,7 +35,6 @@ macro_rules! log_action {
 pub async fn dispatch(tool_name: &str, args: &str, ctx: &ToolContext) -> String {
     match tool_name {
         "comment" => dispatch_comment(args, ctx).await,
-        "move_ticket" => dispatch_move_ticket(args, ctx).await,
         "assign" => dispatch_assign(args, ctx).await,
         "create_sub" => dispatch_create_sub(args, ctx).await,
         "set_memory" => dispatch_set_memory(args, ctx).await,
@@ -75,26 +74,6 @@ async fn dispatch_comment(args: &str, ctx: &ToolContext) -> String {
     }
     match ctx.board.comment(&ctx.ticket_id, &parsed.text) {
         Ok(()) => "comment posted".to_string(),
-        Err(e) => format!("error: {e}"),
-    }
-}
-
-#[derive(Deserialize)]
-struct MoveTicketArgs {
-    list: String,
-}
-
-async fn dispatch_move_ticket(args: &str, ctx: &ToolContext) -> String {
-    let parsed: MoveTicketArgs = match serde_json::from_str(args) {
-        Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
-    };
-    log_action!(ctx, ctx.dry_run, format!("move {} to {:?}", ctx.ticket_id, parsed.list));
-    if ctx.dry_run {
-        return dry_run_msg(&format!("move {} to '{}'", ctx.ticket_id, parsed.list));
-    }
-    match ctx.board.move_ticket(&ctx.ticket_id, &parsed.list) {
-        Ok(()) => format!("moved to '{}'", parsed.list),
         Err(e) => format!("error: {e}"),
     }
 }
@@ -236,17 +215,6 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "text": { "type": "string", "description": "The comment text to post" }
                 },
                 "required": ["text"]
-            }),
-        },
-        ToolDefinition {
-            name: "move_ticket".to_string(),
-            description: "Move the ticket to a different column by name.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "list": { "type": "string", "description": "The target column name" }
-                },
-                "required": ["list"]
             }),
         },
         ToolDefinition {
@@ -458,7 +426,6 @@ mod tests {
             Ok(())
         }
         fn assign(&self, _id: &str, _username: &str) -> Result<(), OrgaError> { Ok(()) }
-        fn move_ticket(&self, _id: &str, _list: &str) -> Result<(), OrgaError> { Ok(()) }
         fn create_sub(&self, _parent_id: &str, title: &str, _description: Option<&str>, _list: Option<&str>) -> Result<crate::models::Ticket, OrgaError> {
             Err(OrgaError::NotFound(format!("mock: {title}")))
         }
@@ -495,13 +462,6 @@ mod tests {
         let ctx = make_ctx(false);
         let result = dispatch("comment", r#"{"text":"hello"}"#, &ctx).await;
         assert_eq!(result, "comment posted");
-    }
-
-    #[tokio::test]
-    async fn dispatch_move_ticket_dry_run() {
-        let ctx = make_ctx(true);
-        let result = dispatch("move_ticket", r#"{"list":"In Progress"}"#, &ctx).await;
-        assert!(result.contains("[dry-run]"));
     }
 
     #[tokio::test]

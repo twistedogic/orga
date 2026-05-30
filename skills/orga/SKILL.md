@@ -109,22 +109,6 @@ Return it to the creator with an explanation:
 orga ticket return <id> --comment "<reason>"
 ```
 
-## Finishing a ticket
-
-Only move a ticket after a human has explicitly confirmed in a comment that the work is done.
-
-First discover the available columns:
-
-```bash
-orga columns --json
-```
-
-Then move to the appropriate target column:
-
-```bash
-orga ticket move <id> "<column name>"
-```
-
 ## Key rules
 
 - Always use `--json` — every command supports it, parse that not human-readable output
@@ -132,7 +116,6 @@ orga ticket move <id> "<column name>"
 - Work one ticket per session — the first eligible one (latest comment not from you)
 - Read memory before working, write memory after findings
 - Comments are your only communication channel — use them deliberately
-- Never move a ticket without explicit human confirmation
 - Use `ticket return` when the ticket is misrouted or out of scope, not when done
 
 ## Artifacts
@@ -162,7 +145,6 @@ orga ticket list --json --completed              # completed tickets
 orga ticket list --json --all                    # all tickets
 orga ticket show --json <id>
 orga ticket comment <id> "<text>"
-orga ticket move <id> "<list name>"
 orga ticket return <id> [--comment "<text>"]
 orga ticket assign <id> <username>
 orga ticket create-sub <parent_id> "<title>" [--description "<text>"] [--list "<column name>"]
