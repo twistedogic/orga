@@ -57,14 +57,14 @@ Do NOT call `comment`, `done`, or `skip` unless they are in your available tools
         subagent_cfg.name, subagent_cfg.description, tools_list
     ));
 
-    if let Some(ctx) = skill_ctx {
-        if !ctx.active.is_empty() {
-            let mut section = "\n## Active Skills".to_string();
-            for (name, body) in &ctx.active {
-                section.push_str(&format!("\n### {name}\n{body}"));
-            }
-            parts.push(section);
+    if let Some(ctx) = skill_ctx
+        && !ctx.active.is_empty()
+    {
+        let mut section = "\n## Active Skills".to_string();
+        for (name, body) in &ctx.active {
+            section.push_str(&format!("\n### {name}\n{body}"));
         }
+        parts.push(section);
     }
 
     parts.join("\n")

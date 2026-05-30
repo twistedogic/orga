@@ -365,7 +365,7 @@ where
 
     let mut action_count = 0usize;
     let mut history: Vec<Message> = Vec::new();
-    let mut last_text = String::new();
+    let mut last_text;
 
     loop {
         if action_count >= max_actions {
