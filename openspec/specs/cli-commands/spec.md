@@ -87,21 +87,6 @@ The CLI SHALL provide `orga ticket assign <id> <username>` to assign a ticket to
 - **WHEN** the username does not exist on the board
 - **THEN** the command exits with a non-zero code and prints an error to stderr
 
-### Requirement: Ticket move command
-The CLI SHALL provide `orga ticket move <id> <list>` to move a ticket to a different list (column) by list name.
-
-#### Scenario: Move succeeds
-- **WHEN** a valid ticket ID and valid list name are provided
-- **THEN** the ticket is moved to that list and a success message is printed
-
-#### Scenario: Agent cannot close tickets
-- **WHEN** the target list is a "Done" or "Closed" equivalent list
-- **THEN** the command SHALL still execute the move — closing restriction is a policy enforced by the agent, not the CLI
-
-#### Scenario: Unknown list
-- **WHEN** the list name does not exist on the board
-- **THEN** the command exits with a non-zero code and prints an error to stderr
-
 ### Requirement: Ticket create-sub command
 The CLI SHALL provide `orga ticket create-sub <parent-id> <title> [--description <text>] [--list <column-name>]` to create a sub-ticket linked to a parent ticket. The sub-ticket SHALL be created unassigned. If `--list` is omitted, the sub-ticket SHALL be placed in the same list as the parent. If `--list` is provided, the CLI SHALL error if no list with that name exists.
 

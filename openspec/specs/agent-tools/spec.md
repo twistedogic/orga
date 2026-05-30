@@ -10,7 +10,6 @@ The agent loop SHALL expose the following tools to the LLM during a ticket cycle
 | Tool | Available to | Mutating | Maps to |
 |------|-------------|----------|---------|
 | `comment(text)` | main agent | yes | `board.comment()` |
-| `move_ticket(list)` | subagent (if configured) | yes | `board.move_ticket()` |
 | `assign(username)` | subagent (if configured) | yes | `board.assign()` |
 | `create_sub(title)` | subagent (if configured) | yes | `board.create_sub()` |
 | `set_memory(context)` | main agent + subagent (if configured) | yes | `memory_store.set()` |
@@ -48,62 +47,5 @@ The agent loop SHALL expose the following tools to the LLM during a ticket cycle
 If a tool call fails (e.g., invalid ticket ID, network error, artifact not found), the error SHALL be returned as a `tool_result` with `is_error: true`. The cycle SHALL continue within the cap.
 
 #### Scenario: Tool error returned to LLM
-- **WHEN** the LLM calls `move_ticket(list: "Nonexistent Column")` and the board returns an error
+- **WHEN** a tool call fails due to a network or board error
 - **THEN** the error message is returned as a tool_result and the LLM receives it in the next turn
-
-### Requirement: dispatch tool
-The main agent SHALL have access to a `dispatch(subagent, task)` tool when subagents are configured. It is a mutating tool. In dry-run mode it SHALL be logged but not executed.
-
-#### Scenario: dispatch tool available when subagents configured
-- **WHEN** subagents are configured and the main agent loop runs
-- **THEN** `dispatch` is included in the tool definitions sent to the LLM
-
-#### Scenario: dispatch suppressed in dry-run
-- **WHEN** dry-run is active and the main agent calls `dispatch(subagent: "researcher", task: "...")`
-- **THEN** the action is logged but the subagent loop is not started; a dry-run notice is returned as the tool result
-
-### Requirement: return tool
-The subagent tool set SHALL include a `return(result)` terminal tool. Calling it ends the subagent loop and surfaces the result to the main agent.
-
-#### Scenario: return tool available in subagent loop
-- **WHEN** a subagent loop runs
-- **THEN** `return` is included in the tool definitions sent to the LLM
-
-#### Scenario: return is a terminal tool
-- **WHEN** the subagent calls `return(result: "...")`
-- **THEN** the subagent loop terminates immediately after processing this tool call
-
-### Requirement: Ticket context construction
-Before the first LLM turn, the loop SHALL construct the ticket context as follows:
-- System prompt: workflow prompt for the ticket's current column (if configured) + agent identity
-- User message: ticket fields (id, title, description, list, url, assignees, creator), checklists, comments (with compaction applied if present), current memory (if any)
-
-#### Scenario: Workflow prompt injected
-- **WHEN** a workflow entry matches the ticket's column
-- **THEN** the system prompt includes the workflow prompt text
-
-### Requirement: File tools
-The agent loop SHALL expose `read_file`, `write_file`, `list_files`, and `bash` tools when `[workspace]` is configured. These tools SHALL be available to subagents via their `tools` list. In dry-run mode, `write_file` SHALL be logged but not executed; `read_file`, `list_files`, and `bash` SHALL execute normally.
-
-| Tool | Mutating | Maps to |
-|------|----------|---------|
-| `read_file(path)` | no | `workspace_store.read()` |
-| `write_file(path, content)` | yes | `workspace_store.write()` |
-| `list_files()` | no | `workspace_store.list()` |
-| `bash(command)` | yes | `sh -c <command>` in ticket workspace |
-
-#### Scenario: read_file executes in dry-run
-- **WHEN** dry-run is active and the LLM calls `read_file(path: "notes.md")`
-- **THEN** the file is read and its content returned (read tools are not suppressed)
-
-#### Scenario: write_file suppressed in dry-run
-- **WHEN** dry-run is active and the LLM calls `write_file(path: "out.md", content: "...")`
-- **THEN** the action is logged but not executed; a dry-run notice is returned as the tool result
-
-#### Scenario: list_files executes in dry-run
-- **WHEN** dry-run is active and the LLM calls `list_files()`
-- **THEN** the file listing is returned normally (read tools are not suppressed)
-
-#### Scenario: bash executes in dry-run
-- **WHEN** dry-run is active and the LLM calls `bash(command: "cargo check")`
-- **THEN** the command executes normally and structured output is returned (bash is not suppressed in dry-run)

@@ -42,9 +42,6 @@ pub async fn dispatch(tool_name: &str, args: &str, ctx: &ToolContext) -> String 
         "done" => dispatch_done(args, ctx).await,
         "skip" => "skip".to_string(),
         "return" => dispatch_return(args).await,
-        "read_file" => dispatch_read_file(args, ctx).await,
-        "write_file" => dispatch_write_file(args, ctx).await,
-        "list_files" => dispatch_list_files(ctx).await,
         "bash" => dispatch_bash(args, ctx).await,
         other => format!("error: unknown tool '{other}'"),
     }
@@ -308,38 +305,6 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "read_file".to_string(),
-            description: "Read a text file from the ticket workspace. Returns file content.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Relative path within the ticket workspace" }
-                },
-                "required": ["path"]
-            }),
-        },
-        ToolDefinition {
-            name: "write_file".to_string(),
-            description: "Write text content to a file in the ticket workspace. Creates directories as needed, overwrites if exists.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Relative path within the ticket workspace" },
-                    "content": { "type": "string", "description": "Text content to write" }
-                },
-                "required": ["path", "content"]
-            }),
-        },
-        ToolDefinition {
-            name: "list_files".to_string(),
-            description: "List all files in the ticket workspace. Returns a newline-separated flat list of relative paths.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        },
-        ToolDefinition {
             name: "bash".to_string(),
             description: "Run a shell command in the ticket workspace directory. Returns structured JSON with stdout, stderr, and exit_code.".to_string(),
             parameters: serde_json::json!({
@@ -351,52 +316,6 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
     ]
-}
-
-#[derive(Deserialize)]
-struct ReadFileArgs {
-    path: String,
-}
-
-async fn dispatch_read_file(args: &str, ctx: &ToolContext) -> String {
-    let parsed: ReadFileArgs = match serde_json::from_str(args) {
-        Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
-    };
-    let ws = match &ctx.workspace {
-        Some(w) => w,
-        None => return "error: workspace not configured".to_string(),
-    };
-    match ws.read(&ctx.ticket_id, &parsed.path) {
-        Ok(content) => content,
-        Err(crate::error::OrgaError::NotFound(_)) => "error: file not found".to_string(),
-        Err(e) => format!("error: {e}"),
-    }
-}
-
-#[derive(Deserialize)]
-struct WriteFileArgs {
-    path: String,
-    content: String,
-}
-
-async fn dispatch_write_file(args: &str, ctx: &ToolContext) -> String {
-    let parsed: WriteFileArgs = match serde_json::from_str(args) {
-        Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
-    };
-    log_action!(ctx, ctx.dry_run, format!("write_file '{}' for {}", parsed.path, ctx.ticket_id));
-    if ctx.dry_run {
-        return dry_run_msg(&format!("write_file '{}'", parsed.path));
-    }
-    let ws = match &ctx.workspace {
-        Some(w) => w,
-        None => return "error: workspace not configured".to_string(),
-    };
-    match ws.write(&ctx.ticket_id, &parsed.path, &parsed.content) {
-        Ok(()) => format!("wrote '{}'", parsed.path),
-        Err(e) => format!("error: {e}"),
-    }
 }
 
 #[derive(Deserialize)]
@@ -434,17 +353,6 @@ async fn dispatch_bash(args: &str, ctx: &ToolContext) -> String {
         }
         Ok(Err(e)) => format!("error: failed to spawn process: {e}"),
         Err(_) => serde_json::json!({ "stdout": "", "stderr": "timeout: command exceeded 120s", "exit_code": -1 }).to_string(),
-    }
-}
-
-async fn dispatch_list_files(ctx: &ToolContext) -> String {
-    let ws = match &ctx.workspace {
-        Some(w) => w,
-        None => return "error: workspace not configured".to_string(),
-    };
-    match ws.list(&ctx.ticket_id) {
-        Ok(listing) => listing,
-        Err(e) => format!("error: {e}"),
     }
 }
 

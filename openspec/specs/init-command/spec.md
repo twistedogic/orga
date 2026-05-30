@@ -6,14 +6,18 @@ Interactive TUI setup wizard for creating or updating the orga config file.
 ## Requirements
 
 ### Requirement: Init command runs interactive setup wizard
-The CLI SHALL provide `orga init` as a top-level command that launches an interactive TUI wizard to create or update the config file. The command SHALL NOT require a valid config file to already exist.
+The CLI SHALL provide `orga init board` and `orga init agent` as subcommands of `orga init`. `orga init` alone SHALL display subcommand help and exit. The commands SHALL NOT require a valid config file to already exist.
 
-#### Scenario: First-time setup with no existing config
-- **WHEN** `orga init` is run and no config file exists at the resolved path
+#### Scenario: orga init alone shows help
+- **WHEN** `orga init` is run without a subcommand
+- **THEN** the CLI prints subcommand help listing `board` and `agent` and exits with a non-zero code
+
+#### Scenario: First-time board setup with no existing config
+- **WHEN** `orga init board` is run and no config file exists at the resolved path
 - **THEN** the wizard starts with empty defaults for all prompts
 
 #### Scenario: Re-run with existing config
-- **WHEN** `orga init` is run and a config file already exists
+- **WHEN** `orga init board` is run and a config file already exists
 - **THEN** each prompt is pre-populated with the current value from the existing config
 
 #### Scenario: Config path override respected
@@ -56,18 +60,3 @@ After successful authentication, the wizard SHALL call `GET https://api.trello.c
 #### Scenario: No boards found
 - **WHEN** the authenticated member has no boards
 - **THEN** the wizard exits with a non-zero code and a message that no boards were found
-
-### Requirement: Wizard writes a valid config file
-On completion the wizard SHALL write a valid TOML config to the resolved path and verify it loads without error. When the user completes the artifact store sub-flow, the config SHALL include `[artifact]` and `[artifact.git]` sections. When the user skips artifact setup, those sections SHALL be omitted.
-
-#### Scenario: Config written successfully without artifact setup
-- **WHEN** all Trello/board prompts are completed and the user skips artifact setup
-- **THEN** a valid `config.toml` is written containing `[agent]`, `[board]`, and `[trello]` sections; no artifact sections are present
-
-#### Scenario: Config written successfully with artifact setup
-- **WHEN** all prompts including artifact store are completed
-- **THEN** a valid `config.toml` is written containing `[agent]`, `[board]`, `[trello]`, `[artifact]`, and `[artifact.git]` sections
-
-#### Scenario: Written config self-validates
-- **WHEN** the file is written
-- **THEN** the wizard attempts to load it via `AppConfig::load()` and exits with an error if parsing fails

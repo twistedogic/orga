@@ -9,7 +9,7 @@ use orga::agent::skills::{match_skills, scan_skills};
 use orga::board::build_board;
 use orga::config::AppConfig;
 use orga::error::OrgaError;
-use orga::init::run_init;
+use orga::init::{run_agent_init, run_board_init};
 use orga::logging::Logger;
 use orga::memory::{CompactionStore, MemoryStore};
 use orga::models::{Column, CommentCompaction, Ticket, TicketSummary};
@@ -34,9 +34,17 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum InitCommands {
+    #[command(about = "Interactive setup wizard for board credentials (Trello / Linear)")]
+    Board,
+    #[command(about = "Interactive setup wizard for agent (LLM) mode")]
+    Agent,
+}
+
+#[derive(Subcommand)]
 enum Commands {
-    #[command(about = "Interactive setup wizard to create or update config")]
-    Init,
+    #[command(subcommand, about = "Interactive setup wizard to create or update config")]
+    Init(InitCommands),
     #[command(subcommand, about = "Manage tickets on the board")]
     Ticket(TicketCommands),
     #[command(subcommand, about = "Read and write per-ticket memory")]
@@ -163,15 +171,17 @@ async fn run(cli: Cli) -> Result<(), OrgaError> {
 fn run_sync(cli: Cli) -> Result<(), OrgaError> {
     let config_path = AppConfig::resolve_path(cli.config.as_deref());
 
-    if let Commands::Init = cli.command {
-        return run_init(&config_path);
+    match &cli.command {
+        Commands::Init(InitCommands::Board) => return run_board_init(&config_path),
+        Commands::Init(InitCommands::Agent) => return run_agent_init(&config_path),
+        _ => {}
     }
 
     let config = AppConfig::load(&config_path)?;
     let logger = Arc::new(config.logger());
 
     match cli.command {
-        Commands::Init => unreachable!(),
+        Commands::Init(_) => unreachable!("init commands handled above"),
         Commands::Agent { .. } => unreachable!("agent command handled by run()"),
         Commands::Columns => {
             let board = build_board(&config, Arc::clone(&logger))?;

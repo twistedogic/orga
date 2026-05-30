@@ -1,28 +1,28 @@
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::OrgaError;
 use crate::logging::Logger;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AgentConfig {
     pub name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BoardConfig {
     pub backend: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct LinearConfig {
     pub api_key: String,
     pub team_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TrelloConfig {
     pub api_key: String,
     pub token: String,
@@ -30,37 +30,43 @@ pub struct TrelloConfig {
     pub board_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct MemoryConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct WorkflowEntry {
     pub column: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_file: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceConfig {
     pub path: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SkillsConfig {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SubagentConfig {
     pub name: String,
     pub description: String,
     pub tools: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_actions: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
 }
 
@@ -74,19 +80,24 @@ struct SubagentFrontmatter {
     max_actions: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct LoggingConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub debug: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct LlmConfig {
     pub provider: String,
     pub api_key: String,
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub poll_interval_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_actions_per_ticket: Option<usize>,
 }
 
@@ -101,21 +112,29 @@ impl LlmConfig {
 
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AppConfig {
     pub agent: AgentConfig,
     pub board: BoardConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub trello: Option<TrelloConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub linear: Option<LinearConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub logging: Option<LoggingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workflow: Vec<WorkflowEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub comment_compaction_threshold: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub skills: Option<SkillsConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<SubagentConfig>,
 }
 
@@ -256,7 +275,7 @@ impl AppConfig {
         const VALID_TOOLS: &[&str] = &[
             "comment", "move_ticket", "assign", "create_sub", "set_memory",
             "compact", "done", "skip",
-            "dispatch", "return", "read_file", "write_file", "list_files",
+            "dispatch", "return", "bash",
         ];
         let mut seen_names = std::collections::HashSet::new();
         for sub in &self.subagents {
@@ -310,6 +329,25 @@ impl AppConfig {
             OrgaError::ConfigError(
                 "[llm] section is required for `orga agent` but is missing from config".into(),
             )
+        })
+    }
+
+    pub fn save(&self, path: &Path) -> Result<(), OrgaError> {
+        let toml = toml::to_string(self)
+            .map_err(|e| OrgaError::ConfigError(format!("failed to serialize config: {e}")))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                OrgaError::ConfigError(format!(
+                    "cannot create config directory {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        fs::write(path, &toml).map_err(|e| {
+            OrgaError::ConfigError(format!(
+                "cannot write config to {}: {e}",
+                path.display()
+            ))
         })
     }
 
@@ -879,5 +917,64 @@ model = "claude-opus-4-5"
         let logger = Logger::new(Path::new("/dev/null"), false);
         let result = load_markdown_agents(Path::new("/nonexistent/agents"), &logger);
         assert!(result.is_empty());
+    }
+
+    // --- serialization / save tests ---
+
+    #[test]
+    fn config_round_trips_through_serialize_deserialize() {
+        let f = write_config(VALID_LLM_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        let toml_str = toml::to_string(&cfg).unwrap();
+        let cfg2: AppConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(cfg2.board.backend, cfg.board.backend);
+        assert_eq!(cfg2.agent.name, cfg.agent.name);
+        assert_eq!(cfg2.llm.as_ref().unwrap().provider, "anthropic");
+    }
+
+    #[test]
+    fn none_fields_omitted_from_serialized_output() {
+        let f = write_config(VALID_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.linear.is_none());
+        let toml_str = toml::to_string(&cfg).unwrap();
+        assert!(!toml_str.contains("[linear]"));
+        assert!(!toml_str.contains("[llm]"));
+        assert!(!toml_str.contains("[memory]"));
+    }
+
+    #[test]
+    fn empty_vec_fields_omitted_from_serialized_output() {
+        let f = write_config(VALID_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.subagents.is_empty());
+        assert!(cfg.workflow.is_empty());
+        let toml_str = toml::to_string(&cfg).unwrap();
+        assert!(!toml_str.contains("[[subagents]]"));
+        assert!(!toml_str.contains("[[workflow]]"));
+    }
+
+    #[test]
+    fn save_writes_valid_toml_and_reloads() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        let f = write_config(VALID_LLM_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        cfg.save(&path).unwrap();
+        let cfg2 = AppConfig::load(&path).unwrap();
+        assert_eq!(cfg2.agent.name, cfg.agent.name);
+        assert_eq!(cfg2.llm.as_ref().unwrap().model, "claude-opus-4-5");
+    }
+
+    #[test]
+    fn save_creates_parent_directories() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("nested").join("deep").join("config.toml");
+        let f = write_config(VALID_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        cfg.save(&path).unwrap();
+        assert!(path.exists());
     }
 }
