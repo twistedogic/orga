@@ -69,16 +69,18 @@ where
     C: CompletionClient + Sync,
     C::CompletionModel: CompletionModel + Clone + 'static,
 {
-    let board = build_board(config, Arc::clone(&logger))?;
+    let board = build_board(config, Arc::clone(&logger)).await?;
 
-    let tickets = board.list_assigned()?;
+    let tickets = board.list_assigned().await?;
+    let total = tickets.len();
     let actionable: Vec<_> = tickets
         .into_iter()
         .filter(|t| !t.completed && !t.last_commenter_is_agent)
         .collect();
 
+    logger.info(&format!("[agent] {} ticket(s) assigned, {} waiting on agent", total, actionable.len()));
+
     if actionable.is_empty() {
-        logger.info("[agent] no tickets waiting on agent");
         return Ok(());
     }
 
@@ -115,12 +117,12 @@ where
     C::CompletionModel: CompletionModel + Clone + 'static,
 {
     let llm_cfg = config.llm_config()?;
-    let board = build_board(config, Arc::clone(&logger))?;
+    let board = build_board(config, Arc::clone(&logger)).await?;
     let db_path = config.memory_db_path();
     let memory_store = MemoryStore::open(&db_path)?;
     let compaction_store = CompactionStore::open(&db_path)?;
 
-    let mut ticket = board.get_ticket(ticket_id)?;
+    let mut ticket = board.get_ticket(ticket_id).await?;
 
     if let Some(rec) = compaction_store.get(ticket_id)? {
         ticket.comments.retain(|c| c.at > rec.compacted_through);
@@ -225,7 +227,7 @@ where
             break;
         }
 
-        let tool_board = build_board(config, Arc::clone(&logger))?;
+        let tool_board = build_board(config, Arc::clone(&logger)).await?;
         let tool_memory = MemoryStore::open(&db_path)?;
         let tool_compaction = CompactionStore::open(&db_path)?;
 
@@ -244,7 +246,7 @@ where
             let name = &tc.function.name;
             let args = tc.function.arguments.to_string();
 
-            logger.info(&format!("[agent] ticket {ticket_id}: calling tool '{name}'"));
+            logger.info(&format!("[agent] ticket {ticket_id}: calling tool '{name}' args={args}"));
             if dry_run {
                 println!("[dry-run] would call tool '{name}' with args: {args}");
             }
@@ -255,6 +257,7 @@ where
                 dispatch(name, &args, &tool_ctx).await
             };
 
+            logger.info(&format!("[agent] ticket {ticket_id}: tool '{name}' result={result}"));
             history.push(Message::tool_result(tc.id.clone(), result.clone()));
 
             action_count += 1;
@@ -268,6 +271,12 @@ where
             logger.info(&format!("[agent] ticket {ticket_id}: terminal tool called, ending cycle"));
             break;
         }
+    }
+
+    if action_count > 0 {
+        logger.info(&format!("[agent] ticket {ticket_id}: took {action_count} action(s)"));
+    } else {
+        logger.info(&format!("[agent] ticket {ticket_id}: no actions taken"));
     }
 
     Ok(())
@@ -407,7 +416,7 @@ where
             return last_text;
         }
 
-        let tool_board = match build_board(config, Arc::clone(&logger)) {
+        let tool_board = match build_board(config, Arc::clone(&logger)).await {
             Ok(b) => b,
             Err(e) => return format!("error building board: {e}"),
         };
@@ -437,9 +446,11 @@ where
             let name = &tc.function.name;
             let args = tc.function.arguments.to_string();
 
-            logger.info(&format!("[subagent:{}] calling tool '{name}'", sub_cfg.name));
+            logger.info(&format!("[subagent:{}] calling tool '{name}' args={args}", sub_cfg.name));
 
             let result = dispatch(name, &args, &tool_ctx).await;
+
+            logger.info(&format!("[subagent:{}] tool '{name}' result={result}", sub_cfg.name));
 
             if name == "return" {
                 result_value = result.clone();

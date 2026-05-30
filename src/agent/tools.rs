@@ -70,7 +70,7 @@ async fn dispatch_comment(args: &str, ctx: &ToolContext) -> String {
     if ctx.dry_run {
         return dry_run_msg(&format!("comment on {}", ctx.ticket_id));
     }
-    match ctx.board.comment(&ctx.ticket_id, &parsed.text) {
+    match ctx.board.comment(&ctx.ticket_id, &parsed.text).await {
         Ok(()) => "comment posted".to_string(),
         Err(e) => format!("error: {e}"),
     }
@@ -90,7 +90,7 @@ async fn dispatch_assign(args: &str, ctx: &ToolContext) -> String {
     if ctx.dry_run {
         return dry_run_msg(&format!("assign {} to @{}", ctx.ticket_id, parsed.username));
     }
-    match ctx.board.assign(&ctx.ticket_id, &parsed.username) {
+    match ctx.board.assign(&ctx.ticket_id, &parsed.username).await {
         Ok(()) => format!("assigned @{}", parsed.username),
         Err(e) => format!("error: {e}"),
     }
@@ -112,7 +112,7 @@ async fn dispatch_create_sub(args: &str, ctx: &ToolContext) -> String {
     if ctx.dry_run {
         return dry_run_msg(&format!("create sub-ticket '{}' under {}", parsed.title, ctx.ticket_id));
     }
-    match ctx.board.create_sub(&ctx.ticket_id, &parsed.title, parsed.description.as_deref(), parsed.list.as_deref()) {
+    match ctx.board.create_sub(&ctx.ticket_id, &parsed.title, parsed.description.as_deref(), parsed.list.as_deref()).await {
         Ok(sub) => format!("created sub-ticket: {} ({})", sub.summary.title, sub.summary.url),
         Err(e) => format!("error: {e}"),
     }
@@ -174,7 +174,7 @@ async fn dispatch_done(args: &str, ctx: &ToolContext) -> String {
     if ctx.dry_run {
         return dry_run_msg(&format!("return ticket {} to creator", ctx.ticket_id));
     }
-    match ctx.board.return_ticket(&ctx.ticket_id, parsed.comment.as_deref()) {
+    match ctx.board.return_ticket(&ctx.ticket_id, parsed.comment.as_deref()).await {
         Ok(()) => "ticket returned to creator".to_string(),
         Err(e) => format!("error: {e}"),
     }
@@ -360,38 +360,40 @@ async fn dispatch_bash(args: &str, ctx: &ToolContext) -> String {
 mod tests {
     use super::*;
     use crate::error::OrgaError;
-    use std::cell::RefCell;
+    use async_trait::async_trait;
+    use std::sync::Mutex;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
     struct MockBoard {
-        comments: RefCell<Vec<(String, String)>>,
+        comments: Mutex<Vec<(String, String)>>,
     }
 
     impl MockBoard {
         fn new() -> Self {
-            Self { comments: RefCell::new(vec![]) }
+            Self { comments: Mutex::new(vec![]) }
         }
     }
 
+    #[async_trait]
     impl crate::board::Board for MockBoard {
-        fn list_assigned(&self) -> Result<Vec<crate::models::TicketSummary>, OrgaError> { Ok(vec![]) }
-        fn get_ticket(&self, _id: &str) -> Result<crate::models::Ticket, OrgaError> {
+        async fn list_assigned(&self) -> Result<Vec<crate::models::TicketSummary>, OrgaError> { Ok(vec![]) }
+        async fn get_ticket(&self, _id: &str) -> Result<crate::models::Ticket, OrgaError> {
             Err(OrgaError::NotFound("mock".into()))
         }
-        fn comment(&self, id: &str, text: &str) -> Result<(), OrgaError> {
-            self.comments.borrow_mut().push((id.to_string(), text.to_string()));
+        async fn comment(&self, id: &str, text: &str) -> Result<(), OrgaError> {
+            self.comments.lock().unwrap().push((id.to_string(), text.to_string()));
             Ok(())
         }
-        fn assign(&self, _id: &str, _username: &str) -> Result<(), OrgaError> { Ok(()) }
-        fn create_sub(&self, _parent_id: &str, title: &str, _description: Option<&str>, _list: Option<&str>) -> Result<crate::models::Ticket, OrgaError> {
+        async fn assign(&self, _id: &str, _username: &str) -> Result<(), OrgaError> { Ok(()) }
+        async fn create_sub(&self, _parent_id: &str, title: &str, _description: Option<&str>, _list: Option<&str>) -> Result<crate::models::Ticket, OrgaError> {
             Err(OrgaError::NotFound(format!("mock: {title}")))
         }
-        fn list_columns(&self) -> Result<Vec<crate::models::Column>, OrgaError> { Ok(vec![]) }
-        fn whoami(&self) -> Result<crate::models::Member, OrgaError> {
+        async fn list_columns(&self) -> Result<Vec<crate::models::Column>, OrgaError> { Ok(vec![]) }
+        async fn whoami(&self) -> Result<crate::models::Member, OrgaError> {
             Err(OrgaError::NotFound("mock".into()))
         }
-        fn return_ticket(&self, _id: &str, _comment: Option<&str>) -> Result<(), OrgaError> { Ok(()) }
+        async fn return_ticket(&self, _id: &str, _comment: Option<&str>) -> Result<(), OrgaError> { Ok(()) }
     }
 
     fn make_ctx(dry_run: bool) -> ToolContext {

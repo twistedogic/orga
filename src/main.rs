@@ -150,15 +150,18 @@ fn main() {
         if let Err(e) = rt.block_on(run(cli)) {
             exit_error(&e.to_string(), &default_logger);
         }
-    } else if let Err(e) = run_sync(cli) {
-        exit_error(&e.to_string(), &default_logger);
+    } else {
+        let rt = tokio::runtime::Runtime::new().expect("failed to build tokio runtime");
+        if let Err(e) = rt.block_on(run_sync(cli)) {
+            exit_error(&e.to_string(), &default_logger);
+        }
     }
 }
 
 async fn run(cli: Cli) -> Result<(), OrgaError> {
     let config_path = AppConfig::resolve_path(cli.config.as_deref());
     let config = AppConfig::load(&config_path)?;
-    let logger = Arc::new(config.logger());
+    let logger = Arc::new(config.agent_logger());
 
     match cli.command {
         Commands::Agent { once, dry_run } => {
@@ -168,12 +171,12 @@ async fn run(cli: Cli) -> Result<(), OrgaError> {
     }
 }
 
-fn run_sync(cli: Cli) -> Result<(), OrgaError> {
+async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
     let config_path = AppConfig::resolve_path(cli.config.as_deref());
 
     match &cli.command {
-        Commands::Init(InitCommands::Board) => return run_board_init(&config_path),
-        Commands::Init(InitCommands::Agent) => return run_agent_init(&config_path),
+        Commands::Init(InitCommands::Board) => return tokio::task::block_in_place(|| run_board_init(&config_path)),
+        Commands::Init(InitCommands::Agent) => return tokio::task::block_in_place(|| run_agent_init(&config_path)),
         _ => {}
     }
 
@@ -184,8 +187,8 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
         Commands::Init(_) => unreachable!("init commands handled above"),
         Commands::Agent { .. } => unreachable!("agent command handled by run()"),
         Commands::Columns => {
-            let board = build_board(&config, Arc::clone(&logger))?;
-            let columns = board.list_columns()?;
+            let board = build_board(&config, Arc::clone(&logger)).await?;
+            let columns = board.list_columns().await?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&columns).unwrap());
             } else {
@@ -193,8 +196,8 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
             }
         }
         Commands::Whoami => {
-            let board = build_board(&config, Arc::clone(&logger))?;
-            let member = board.whoami()?;
+            let board = build_board(&config, Arc::clone(&logger)).await?;
+            let member = board.whoami().await?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&member).unwrap());
             } else {
@@ -202,10 +205,10 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
             }
         }
         Commands::Ticket(cmd) => {
-            let board = build_board(&config, Arc::clone(&logger))?;
+            let board = build_board(&config, Arc::clone(&logger)).await?;
             match cmd {
                 TicketCommands::List { completed, all } => {
-                    let tickets = board.list_assigned()?;
+                    let tickets = board.list_assigned().await?;
                     let tickets: Vec<_> = if all {
                         tickets
                     } else if completed {
@@ -240,7 +243,7 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                     }
                 }
                 TicketCommands::Show { id } => {
-                    let mut ticket = board.get_ticket(&id)?;
+                    let mut ticket = board.get_ticket(&id).await?;
                     let db_path = config.memory_db_path();
                     let compaction_store = CompactionStore::open(&db_path)?;
                     if let Some(rec) = compaction_store.get(&id)? {
@@ -291,7 +294,7 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                     if text.is_empty() {
                         return Err(OrgaError::BackendError("comment text cannot be empty".into()));
                     }
-                    board.comment(&id, &text)?;
+                    board.comment(&id, &text).await?;
                     if cli.json {
                         println!("{}", json!({"ok": true}));
                     } else {
@@ -299,7 +302,7 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                     }
                 }
                 TicketCommands::Assign { id, username } => {
-                    board.assign(&id, &username)?;
+                    board.assign(&id, &username).await?;
                     if cli.json {
                         println!("{}", json!({"ok": true}));
                     } else {
@@ -307,7 +310,7 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                     }
                 }
                 TicketCommands::CreateSub { parent_id, title, description, list } => {
-                    let sub = board.create_sub(&parent_id, &title, description.as_deref(), list.as_deref())?;
+                    let sub = board.create_sub(&parent_id, &title, description.as_deref(), list.as_deref()).await?;
                     if cli.json {
                         println!(
                             "{}",
@@ -318,7 +321,7 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                     }
                 }
                 TicketCommands::Return { id, comment } => {
-                    board.return_ticket(&id, comment.as_deref())?;
+                    board.return_ticket(&id, comment.as_deref()).await?;
                     if cli.json {
                         println!("{}", json!({"ok": true}));
                     } else {
@@ -329,7 +332,7 @@ fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                     if summary.is_empty() {
                         return Err(OrgaError::BackendError("summary cannot be empty".into()));
                     }
-                    let ticket = board.get_ticket(&id)?;
+                    let ticket = board.get_ticket(&id).await?;
                     let boundary = ticket
                         .comments
                         .last()

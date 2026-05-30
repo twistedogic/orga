@@ -8,10 +8,15 @@ use chrono::Utc;
 pub struct Logger {
     file: Mutex<Option<File>>,
     debug: bool,
+    stdout: bool,
 }
 
 impl Logger {
     pub fn new(path: &Path, debug: bool) -> Self {
+        Self::with_stdout(path, debug, false)
+    }
+
+    pub fn with_stdout(path: &Path, debug: bool, stdout: bool) -> Self {
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -20,6 +25,7 @@ impl Logger {
         Self {
             file: Mutex::new(file),
             debug,
+            stdout,
         }
     }
 
@@ -43,9 +49,13 @@ impl Logger {
 
     fn write_entry(&self, level: &str, msg: &str) {
         let ts = Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+        let line = format!("{ts} {level} {msg}");
+        if self.stdout {
+            println!("{line}");
+        }
         if let Ok(mut guard) = self.file.lock()
             && let Some(f) = guard.as_mut() {
-                let _ = writeln!(f, "{ts} {level} {msg}");
+                let _ = writeln!(f, "{line}");
             }
     }
 }

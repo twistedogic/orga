@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::Utc;
 
 use orga::board::Board;
@@ -25,12 +26,13 @@ impl MockBoard {
     }
 }
 
+#[async_trait]
 impl Board for MockBoard {
-    fn list_assigned(&self) -> Result<Vec<TicketSummary>, OrgaError> {
+    async fn list_assigned(&self) -> Result<Vec<TicketSummary>, OrgaError> {
         Ok(self.tickets.iter().map(|t| t.summary.clone()).collect())
     }
 
-    fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError> {
+    async fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError> {
         self.tickets
             .iter()
             .find(|t| t.summary.id == id)
@@ -38,19 +40,19 @@ impl Board for MockBoard {
             .ok_or_else(|| OrgaError::NotFound(id.to_string()))
     }
 
-    fn comment(&self, _id: &str, text: &str) -> Result<(), OrgaError> {
+    async fn comment(&self, _id: &str, text: &str) -> Result<(), OrgaError> {
         if text.is_empty() {
             return Err(OrgaError::BackendError("empty comment".into()));
         }
         Ok(())
     }
 
-    fn assign(&self, _id: &str, _username: &str) -> Result<(), OrgaError> {
+    async fn assign(&self, _id: &str, _username: &str) -> Result<(), OrgaError> {
         Ok(())
     }
 
-    fn create_sub(&self, parent_id: &str, title: &str, _description: Option<&str>, _list: Option<&str>) -> Result<Ticket, OrgaError> {
-        let _parent = self.get_ticket(parent_id)?;
+    async fn create_sub(&self, parent_id: &str, title: &str, _description: Option<&str>, _list: Option<&str>) -> Result<Ticket, OrgaError> {
+        let _parent = self.get_ticket(parent_id).await?;
         Ok(Ticket {
             summary: TicketSummary {
                 id: "sub-1".into(),
@@ -72,19 +74,19 @@ impl Board for MockBoard {
         })
     }
 
-    fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
+    async fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
         Ok(vec![
             Column { id: "list-1".into(), name: "To Do".into() },
             Column { id: "list-2".into(), name: "In Progress".into() },
         ])
     }
 
-    fn whoami(&self) -> Result<Member, OrgaError> {
+    async fn whoami(&self) -> Result<Member, OrgaError> {
         Ok(self.whoami_member.clone())
     }
 
-    fn return_ticket(&self, id: &str, _comment: Option<&str>) -> Result<(), OrgaError> {
-        let ticket = self.get_ticket(id)?;
+    async fn return_ticket(&self, id: &str, _comment: Option<&str>) -> Result<(), OrgaError> {
+        let ticket = self.get_ticket(id).await?;
         ticket.summary.creator.ok_or_else(|| OrgaError::BackendError("ticket has no known creator".into()))?;
         Ok(())
     }
@@ -156,47 +158,47 @@ fn ticket_no_creator() -> Ticket {
     }
 }
 
-#[test]
-fn list_assigned_returns_tickets() {
+#[tokio::test]
+async fn list_assigned_returns_tickets() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    let summaries = board.list_assigned().unwrap();
+    let summaries = board.list_assigned().await.unwrap();
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].id, "abc123");
 }
 
-#[test]
-fn list_assigned_empty() {
+#[tokio::test]
+async fn list_assigned_empty() {
     let board = MockBoard::with_tickets(vec![]);
-    let summaries = board.list_assigned().unwrap();
+    let summaries = board.list_assigned().await.unwrap();
     assert!(summaries.is_empty());
 }
 
-#[test]
-fn get_ticket_found() {
+#[tokio::test]
+async fn get_ticket_found() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    let t = board.get_ticket("abc123").unwrap();
+    let t = board.get_ticket("abc123").await.unwrap();
     assert_eq!(t.summary.title, "Fix login bug");
     assert_eq!(t.comments.len(), 1);
 }
 
-#[test]
-fn get_ticket_not_found() {
+#[tokio::test]
+async fn get_ticket_not_found() {
     let board = MockBoard::with_tickets(vec![]);
-    let err = board.get_ticket("nonexistent").unwrap_err();
+    let err = board.get_ticket("nonexistent").await.unwrap_err();
     assert!(matches!(err, OrgaError::NotFound(_)));
 }
 
-#[test]
-fn comment_empty_fails() {
+#[tokio::test]
+async fn comment_empty_fails() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    let err = board.comment("abc123", "").unwrap_err();
+    let err = board.comment("abc123", "").await.unwrap_err();
     assert!(matches!(err, OrgaError::BackendError(_)));
 }
 
-#[test]
-fn create_sub_links_to_parent() {
+#[tokio::test]
+async fn create_sub_links_to_parent() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    let sub = board.create_sub("abc123", "Sub-task one", None, None).unwrap();
+    let sub = board.create_sub("abc123", "Sub-task one", None, None).await.unwrap();
     assert_eq!(sub.summary.title, "Sub-task one");
     assert_eq!(sub.summary.list_id, "list-1");
 }
@@ -247,35 +249,35 @@ fn completed_ticket() -> Ticket {
     }
 }
 
-#[test]
-fn list_assigned_returns_all_tickets() {
+#[tokio::test]
+async fn list_assigned_returns_all_tickets() {
     let board = MockBoard::with_tickets(vec![sample_ticket(), completed_ticket()]);
-    let summaries = board.list_assigned().unwrap();
+    let summaries = board.list_assigned().await.unwrap();
     assert_eq!(summaries.len(), 2);
 }
 
-#[test]
-fn filter_open_tickets() {
+#[tokio::test]
+async fn filter_open_tickets() {
     let board = MockBoard::with_tickets(vec![sample_ticket(), completed_ticket()]);
-    let all = board.list_assigned().unwrap();
+    let all = board.list_assigned().await.unwrap();
     let open: Vec<_> = all.iter().filter(|t| !t.completed).collect();
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].id, "abc123");
 }
 
-#[test]
-fn filter_completed_tickets() {
+#[tokio::test]
+async fn filter_completed_tickets() {
     let board = MockBoard::with_tickets(vec![sample_ticket(), completed_ticket()]);
-    let all = board.list_assigned().unwrap();
+    let all = board.list_assigned().await.unwrap();
     let done: Vec<_> = all.iter().filter(|t| t.completed).collect();
     assert_eq!(done.len(), 1);
     assert_eq!(done[0].id, "done1");
 }
 
-#[test]
-fn filter_all_tickets() {
+#[tokio::test]
+async fn filter_all_tickets() {
     let board = MockBoard::with_tickets(vec![sample_ticket(), completed_ticket()]);
-    let all = board.list_assigned().unwrap();
+    let all = board.list_assigned().await.unwrap();
     assert_eq!(all.len(), 2);
 }
 
@@ -287,19 +289,19 @@ fn completed_ticket_json_has_completed_true() {
     assert_eq!(parsed["completed"], true);
 }
 
-#[test]
-fn whoami_returns_member() {
+#[tokio::test]
+async fn whoami_returns_member() {
     let board = MockBoard::with_tickets(vec![]);
-    let m = board.whoami().unwrap();
+    let m = board.whoami().await.unwrap();
     assert_eq!(m.id, "agent-id");
     assert_eq!(m.username, "agent-1");
     assert_eq!(m.full_name, "Agent One");
 }
 
-#[test]
-fn whoami_json_has_expected_fields() {
+#[tokio::test]
+async fn whoami_json_has_expected_fields() {
     let board = MockBoard::with_tickets(vec![]);
-    let m = board.whoami().unwrap();
+    let m = board.whoami().await.unwrap();
     let json = serde_json::to_string(&m).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(parsed.get("id").is_some());
@@ -324,22 +326,22 @@ fn ticket_show_json_creator_null_when_absent() {
     assert!(parsed["creator"].is_null());
 }
 
-#[test]
-fn return_ticket_succeeds_with_creator() {
+#[tokio::test]
+async fn return_ticket_succeeds_with_creator() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    assert!(board.return_ticket("abc123", None).is_ok());
+    assert!(board.return_ticket("abc123", None).await.is_ok());
 }
 
-#[test]
-fn return_ticket_with_comment_succeeds() {
+#[tokio::test]
+async fn return_ticket_with_comment_succeeds() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    assert!(board.return_ticket("abc123", Some("need more context")).is_ok());
+    assert!(board.return_ticket("abc123", Some("need more context")).await.is_ok());
 }
 
-#[test]
-fn return_ticket_no_creator_errors() {
+#[tokio::test]
+async fn return_ticket_no_creator_errors() {
     let board = MockBoard::with_tickets(vec![ticket_no_creator()]);
-    let err = board.return_ticket("no-creator", None).unwrap_err();
+    let err = board.return_ticket("no-creator", None).await.unwrap_err();
     assert!(matches!(err, OrgaError::BackendError(_)));
     assert!(err.to_string().contains("no known creator"));
 }
@@ -390,60 +392,61 @@ mod live {
     use orga::board::build_board;
     use orga::config::AppConfig;
 
-    fn load_board() -> Box<dyn orga::board::Board> {
+    async fn load_board() -> Box<dyn orga::board::Board> {
         let config_path = AppConfig::resolve_path(None);
         let config = AppConfig::load(&config_path).expect("failed to load config");
         let logger = Arc::new(config.logger());
-        build_board(&config, logger).expect("failed to build board")
+        build_board(&config, logger).await.expect("failed to build board")
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn live_list_teams() {
+    async fn live_list_teams() {
         let config_path = AppConfig::resolve_path(None);
         let config = AppConfig::load(&config_path).expect("failed to load config");
         let linear_cfg = config.linear.as_ref().expect("no [linear] config");
-        let client = reqwest::blocking::Client::new();
+        let client = reqwest::Client::new();
         let resp = client
             .post("https://api.linear.app/graphql")
             .header("Authorization", linear_cfg.api_key.as_str())
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "query": "{ teams { nodes { id name } } }" }))
             .send()
+            .await
             .unwrap();
-        let body: serde_json::Value = resp.json().unwrap();
+        let body: serde_json::Value = resp.json().await.unwrap();
         println!("{}", serde_json::to_string_pretty(&body).unwrap());
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn live_whoami() {
-        let board = load_board();
-        let me = board.whoami().unwrap();
+    async fn live_whoami() {
+        let board = load_board().await;
+        let me = board.whoami().await.unwrap();
         assert!(!me.id.is_empty(), "id should not be empty");
         assert!(!me.username.is_empty(), "username should not be empty");
         println!("whoami: {} ({})", me.username, me.id);
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn live_list_columns() {
-        let board = load_board();
-        let cols = board.list_columns().unwrap();
+    async fn live_list_columns() {
+        let board = load_board().await;
+        let cols = board.list_columns().await.unwrap();
         assert!(!cols.is_empty(), "expected at least one column");
         for col in &cols {
             println!("column: {} ({})", col.name, col.id);
         }
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn live_get_ticket() {
-        let board = load_board();
-        let tickets = board.list_assigned().unwrap();
+    async fn live_get_ticket() {
+        let board = load_board().await;
+        let tickets = board.list_assigned().await.unwrap();
         assert!(!tickets.is_empty(), "need at least one assigned ticket to test get_ticket");
         let id = &tickets[0].id;
-        let ticket = board.get_ticket(id).unwrap();
+        let ticket = board.get_ticket(id).await.unwrap();
         assert_eq!(ticket.summary.id, *id);
         assert!(!ticket.summary.title.is_empty());
         println!("ticket: {} — {}", ticket.summary.title, ticket.summary.url);
@@ -456,14 +459,14 @@ mod live {
         }
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn live_return_ticket() {
-        let board = load_board();
-        let tickets = board.list_assigned().unwrap();
+    async fn live_return_ticket() {
+        let board = load_board().await;
+        let tickets = board.list_assigned().await.unwrap();
         assert!(!tickets.is_empty(), "need at least one assigned ticket to test return_ticket");
         let id = &tickets[0].id;
-        board.return_ticket(id, Some("returning ticket via orga live test")).unwrap();
+        board.return_ticket(id, Some("returning ticket via orga live test")).await.unwrap();
         println!("returned ticket {id}");
     }
 }

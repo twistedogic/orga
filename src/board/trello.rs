@@ -1,7 +1,8 @@
+use async_trait::async_trait;
 use std::sync::Arc;
 
 use chrono::DateTime;
-use reqwest::blocking::Client;
+use reqwest::Client;
 use reqwest::StatusCode;
 use serde::Deserialize;
 
@@ -21,43 +22,46 @@ pub struct TrelloBackend {
 }
 
 impl TrelloBackend {
-    pub fn new(api_key: String, token: String, board_id: String, member_id: String, agent_name: String, logger: Arc<Logger>) -> Self {
-        Self {
+    pub fn new(api_key: String, token: String, board_id: String, member_id: String, agent_name: String, logger: Arc<Logger>) -> Result<Self, crate::error::OrgaError> {
+        Ok(Self {
             api_key,
             token,
             board_id,
             member_id,
             agent_name,
-            client: Client::new(),
+            client: Client::builder()
+                .build()
+                .map_err(|e| crate::error::OrgaError::BackendError(e.to_string()))?,
             logger,
-        }
+        })
     }
 
     fn auth_params(&self) -> [(&str, &str); 2] {
         [("key", &self.api_key), ("token", &self.token)]
     }
 
-    fn get<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<T, OrgaError> {
+    async fn get<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<T, OrgaError> {
         let resp = self
             .client
             .get(url)
             .query(&self.auth_params())
-            .send()?;
-        let body = self.handle_response(resp)?;
+            .send()
+            .await?;
+        let body = self.handle_response(resp).await?;
         serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))
     }
 
-    fn post_form(&self, url: &str, params: &[(&str, &str)]) -> Result<serde_json::Value, OrgaError> {
+    async fn post_form(&self, url: &str, params: &[(&str, &str)]) -> Result<serde_json::Value, OrgaError> {
         let mut all: Vec<(&str, &str)> = self.auth_params().to_vec();
         all.extend_from_slice(params);
-        let resp = self.client.post(url).query(&all).send()?;
-        let body = self.handle_response(resp)?;
+        let resp = self.client.post(url).query(&all).send().await?;
+        let body = self.handle_response(resp).await?;
         serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))
     }
 
-    fn handle_response(&self, resp: reqwest::blocking::Response) -> Result<String, OrgaError> {
+    async fn handle_response(&self, resp: reqwest::Response) -> Result<String, OrgaError> {
         let status = resp.status();
-        let body = resp.text().unwrap_or_default();
+        let body = resp.text().await.unwrap_or_default();
         match status {
             StatusCode::TOO_MANY_REQUESTS => {
                 self.logger.error(&format!("Trello HTTP {status}\nBody: {body}"));
@@ -79,15 +83,15 @@ impl TrelloBackend {
         }
     }
 
-    fn board_lists(&self) -> Result<Vec<TrelloList>, OrgaError> {
+    async fn board_lists(&self) -> Result<Vec<TrelloList>, OrgaError> {
         let url = format!("https://api.trello.com/1/boards/{}/lists", self.board_id);
-        self.get(&url)
+        self.get(&url).await
     }
 
-    fn resolve_member_id(&self, username: &str) -> Result<String, OrgaError> {
+    async fn resolve_member_id(&self, username: &str) -> Result<String, OrgaError> {
         let username = username.trim_start_matches('@');
         let url = format!("https://api.trello.com/1/members/{username}");
-        let resp: TrelloMember = self.get(&url)?;
+        let resp: TrelloMember = self.get(&url).await?;
         Ok(resp.id)
     }
 
@@ -219,20 +223,20 @@ impl TrelloBackend {
         })
     }
 
-    fn get_list_name(&self, list_id: &str) -> Result<String, OrgaError> {
+    async fn get_list_name(&self, list_id: &str) -> Result<String, OrgaError> {
         let url = format!("https://api.trello.com/1/lists/{list_id}");
-        let list: TrelloList = self.get(&url)?;
+        let list: TrelloList = self.get(&url).await?;
         Ok(list.name)
     }
 
-    fn get_or_create_checklist(&self, card_id: &str, name: &str) -> Result<String, OrgaError> {
+    async fn get_or_create_checklist(&self, card_id: &str, name: &str) -> Result<String, OrgaError> {
         let url = format!("https://api.trello.com/1/cards/{card_id}/checklists");
-        let lists: Vec<TrelloChecklist> = self.get(&url)?;
+        let lists: Vec<TrelloChecklist> = self.get(&url).await?;
         if let Some(existing) = lists.into_iter().find(|cl| cl.name == name) {
             return Ok(existing.id);
         }
         let url = "https://api.trello.com/1/checklists";
-        let resp = self.post_form(url, &[("idCard", card_id), ("name", name)])?;
+        let resp = self.post_form(url, &[("idCard", card_id), ("name", name)]).await?;
         resp["id"]
             .as_str()
             .map(String::from)
@@ -241,8 +245,9 @@ impl TrelloBackend {
 
 }
 
+#[async_trait]
 impl Board for TrelloBackend {
-    fn list_assigned(&self) -> Result<Vec<TicketSummary>, OrgaError> {
+    async fn list_assigned(&self) -> Result<Vec<TicketSummary>, OrgaError> {
         let url = format!(
             "https://api.trello.com/1/members/{}/cards",
             self.member_id
@@ -252,8 +257,9 @@ impl Board for TrelloBackend {
             .get(&url)
             .query(&self.auth_params())
             .query(&[("filter", "all"), ("actions", "commentCard,createCard")])
-            .send()?;
-        let body = self.handle_response(resp)?;
+            .send()
+            .await?;
+        let body = self.handle_response(resp).await?;
         let cards: Vec<TrelloCard> = serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))?;
 
         let cards: Vec<TrelloCard> = cards
@@ -261,16 +267,15 @@ impl Board for TrelloBackend {
             .filter(|c| c.id_board == self.board_id)
             .collect();
 
-        Ok(cards
-            .into_iter()
-            .map(|card| {
-                let list_name = self.get_list_name(&card.id_list).unwrap_or_default();
-                self.card_to_summary(&card, list_name)
-            })
-            .collect())
+        let mut summaries = Vec::new();
+        for card in cards {
+            let list_name = self.get_list_name(&card.id_list).await.unwrap_or_default();
+            summaries.push(self.card_to_summary(&card, list_name));
+        }
+        Ok(summaries)
     }
 
-    fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError> {
+    async fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError> {
         let url = format!("https://api.trello.com/1/cards/{id}");
         let resp = self
             .client
@@ -281,40 +286,41 @@ impl Board for TrelloBackend {
                 ("members", "true"),
                 ("actions", "commentCard,createCard"),
             ])
-            .send()?;
-        let body = self.handle_response(resp)?;
+            .send()
+            .await?;
+        let body = self.handle_response(resp).await?;
         let card: TrelloCard = serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))?;
-        let list_name = self.get_list_name(&card.id_list)?;
+        let list_name = self.get_list_name(&card.id_list).await?;
         self.card_to_ticket(card, list_name)
     }
 
-    fn comment(&self, id: &str, text: &str) -> Result<(), OrgaError> {
+    async fn comment(&self, id: &str, text: &str) -> Result<(), OrgaError> {
         if text.is_empty() {
             return Err(OrgaError::BackendError("comment text cannot be empty".into()));
         }
         let tagged = append_agent_tag(text, &self.agent_name);
         let url = format!("https://api.trello.com/1/cards/{id}/actions/comments");
-        self.post_form(&url, &[("text", &tagged)])?;
+        self.post_form(&url, &[("text", &tagged)]).await?;
         Ok(())
     }
 
-    fn assign(&self, id: &str, username: &str) -> Result<(), OrgaError> {
-        let member_id = self.resolve_member_id(username)?;
+    async fn assign(&self, id: &str, username: &str) -> Result<(), OrgaError> {
+        let member_id = self.resolve_member_id(username).await?;
         let url = format!("https://api.trello.com/1/cards/{id}/idMembers");
-        self.post_form(&url, &[("value", &member_id)])?;
+        self.post_form(&url, &[("value", &member_id)]).await?;
         Ok(())
     }
 
-    fn create_sub(&self, parent_id: &str, title: &str, description: Option<&str>, list: Option<&str>) -> Result<Ticket, OrgaError> {
+    async fn create_sub(&self, parent_id: &str, title: &str, description: Option<&str>, list: Option<&str>) -> Result<Ticket, OrgaError> {
         let list_id = if let Some(list_name) = list {
-            let columns = self.list_columns()?;
+            let columns = self.list_columns().await?;
             columns
                 .into_iter()
                 .find(|c| c.name.eq_ignore_ascii_case(list_name))
                 .map(|c| c.id)
                 .ok_or_else(|| OrgaError::NotFound(format!("list '{list_name}'")))?  
         } else {
-            let parent = self.get_ticket(parent_id)?;
+            let parent = self.get_ticket(parent_id).await?;
             parent.summary.list_id
         };
         let url = "https://api.trello.com/1/cards";
@@ -324,7 +330,7 @@ impl Board for TrelloBackend {
             desc_owned = desc.to_string();
             params.push(("desc", &desc_owned));
         }
-        let resp = self.post_form(url, &params)?;
+        let resp = self.post_form(url, &params).await?;
         let sub_id = resp["id"]
             .as_str()
             .ok_or_else(|| OrgaError::BackendError("no id in card response".into()))?;
@@ -332,31 +338,32 @@ impl Board for TrelloBackend {
             .as_str()
             .unwrap_or(sub_id);
 
-        let checklist_id = self.get_or_create_checklist(parent_id, "Sub-tasks")?;
+        let checklist_id = self.get_or_create_checklist(parent_id, "Sub-tasks").await?;
         let item_text = format!("{title} - {sub_url}");
         let cl_url = format!("https://api.trello.com/1/checklists/{checklist_id}/checkItems");
-        self.post_form(&cl_url, &[("name", &item_text)])?;
+        self.post_form(&cl_url, &[("name", &item_text)]).await?;
 
-        self.get_ticket(sub_id)
+        self.get_ticket(sub_id).await
     }
 
-    fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
+    async fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
         Ok(self
-            .board_lists()?
+            .board_lists().await?
             .into_iter()
             .map(|l| Column { id: l.id, name: l.name })
             .collect())
     }
 
-    fn whoami(&self) -> Result<Member, OrgaError> {
+    async fn whoami(&self) -> Result<Member, OrgaError> {
         let url = format!("https://api.trello.com/1/members/{}", self.member_id);
         let resp = self
             .client
             .get(&url)
             .query(&self.auth_params())
             .query(&[("fields", "id,username,fullName")])
-            .send()?;
-        let body = self.handle_response(resp)?;
+            .send()
+            .await?;
+        let body = self.handle_response(resp).await?;
         let m: TrelloMember = serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))?;
         Ok(Member {
             id: m.id,
@@ -365,15 +372,15 @@ impl Board for TrelloBackend {
         })
     }
 
-    fn return_ticket(&self, id: &str, comment: Option<&str>) -> Result<(), OrgaError> {
-        let ticket = self.get_ticket(id)?;
+    async fn return_ticket(&self, id: &str, comment: Option<&str>) -> Result<(), OrgaError> {
+        let ticket = self.get_ticket(id).await?;
         let creator = ticket.summary.creator.ok_or_else(|| {
             OrgaError::BackendError("ticket has no known creator".into())
         })?;
         if let Some(text) = comment {
-            self.comment(id, text)?;
+            self.comment(id, text).await?;
         }
-        self.assign(id, &creator.username)?;
+        self.assign(id, &creator.username).await?;
         Ok(())
     }
 }
@@ -543,7 +550,7 @@ mod tests {
             "member1".into(),
             "agent-1".into(),
             logger,
-        )
+        ).unwrap()
     }
 
     #[test]

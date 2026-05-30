@@ -1,7 +1,8 @@
+use async_trait::async_trait;
 use std::sync::Arc;
 
 use chrono::DateTime;
-use reqwest::blocking::Client;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::board::Board;
@@ -19,13 +20,15 @@ pub struct LinearBackend {
 }
 
 impl LinearBackend {
-    pub fn new(
+    pub async fn new(
         api_key: String,
         team_id: String,
         agent_name: String,
         logger: Arc<Logger>,
     ) -> Result<Self, OrgaError> {
-        let client = Client::new();
+        let client = Client::builder()
+            .build()
+            .map_err(|e| OrgaError::BackendError(e.to_string()))?;
         let backend = Self {
             api_key,
             team_id,
@@ -34,11 +37,11 @@ impl LinearBackend {
             client,
             logger,
         };
-        let viewer = backend.resolve_viewer()?;
+        let viewer = backend.resolve_viewer().await?;
         Ok(Self { viewer, ..backend })
     }
 
-    fn gql<T: for<'de> Deserialize<'de>>(
+    async fn gql<T: for<'de> Deserialize<'de>>(
         &self,
         query: &str,
         variables: serde_json::Value,
@@ -64,10 +67,11 @@ impl LinearBackend {
             .header("Authorization", self.api_key.as_str())
             .header("Content-Type", "application/json")
             .json(&Payload { query, variables })
-            .send()?;
+            .send()
+            .await?;
 
         let status = resp.status();
-        let body = resp.text().unwrap_or_default();
+        let body = resp.text().await.unwrap_or_default();
 
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::BAD_REQUEST {
             let msg = serde_json::from_str::<GqlResponse>(&body)
@@ -99,7 +103,7 @@ impl LinearBackend {
         serde_json::from_value(data).map_err(|e| OrgaError::BackendError(e.to_string()))
     }
 
-    fn resolve_viewer(&self) -> Result<Member, OrgaError> {
+    async fn resolve_viewer(&self) -> Result<Member, OrgaError> {
         #[derive(Deserialize)]
         struct Resp {
             viewer: LinearUser,
@@ -107,7 +111,7 @@ impl LinearBackend {
         let resp: Resp = self.gql(
             "query { viewer { id displayName } }",
             serde_json::json!({}),
-        )?;
+        ).await?;
         Ok(Member {
             id: resp.viewer.id.clone(),
             username: resp.viewer.display_name.clone(),
@@ -115,7 +119,7 @@ impl LinearBackend {
         })
     }
 
-    fn team_states(&self) -> Result<Vec<LinearState>, OrgaError> {
+    async fn team_states(&self) -> Result<Vec<LinearState>, OrgaError> {
         #[derive(Deserialize)]
         struct Resp {
             team: TeamStatesResp,
@@ -128,11 +132,11 @@ impl LinearBackend {
             "{{ team(id: \"{}\") {{ states {{ nodes {{ id name type }} }} }} }}",
             self.team_id
         );
-        let resp: Resp = self.gql(&query, serde_json::json!({}))?;
+        let resp: Resp = self.gql(&query, serde_json::json!({})).await?;
         Ok(resp.team.states.nodes)
     }
 
-    fn resolve_user_id(&self, username: &str) -> Result<String, OrgaError> {
+    async fn resolve_user_id(&self, username: &str) -> Result<String, OrgaError> {
         let username = username.trim_start_matches('@');
         #[derive(Deserialize)]
         struct Resp {
@@ -145,7 +149,7 @@ impl LinearBackend {
                 }
             }",
             serde_json::json!({ "name": username }),
-        )?;
+        ).await?;
         match resp.users.nodes.len() {
             0 => Err(OrgaError::NotFound(format!("user '{username}'"))),
             1 => Ok(resp.users.nodes.into_iter().next().unwrap().id),
@@ -318,20 +322,21 @@ impl LinearBackend {
     }
 }
 
+#[async_trait]
 impl Board for LinearBackend {
-    fn whoami(&self) -> Result<Member, OrgaError> {
+    async fn whoami(&self) -> Result<Member, OrgaError> {
         Ok(self.viewer.clone())
     }
 
-    fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
+    async fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
         Ok(self
-            .team_states()?
+            .team_states().await?
             .into_iter()
             .map(|s| Column { id: s.id, name: s.name })
             .collect())
     }
 
-    fn list_assigned(&self) -> Result<Vec<TicketSummary>, OrgaError> {
+    async fn list_assigned(&self) -> Result<Vec<TicketSummary>, OrgaError> {
         #[derive(Deserialize)]
         struct Resp {
             issues: Nodes<LinearIssueSummary>,
@@ -340,11 +345,11 @@ impl Board for LinearBackend {
             "{{ issues(filter: {{ team: {{ id: {{ eq: \"{}\" }} }} assignee: {{ id: {{ eq: \"{}\" }} }} }}) {{ nodes {{ id title description url state {{ id name type }} creator {{ id displayName }} comments {{ nodes {{ id body createdAt }} }} labels {{ nodes {{ name }} }} }} }} }}",
             self.team_id, self.viewer.id
         );
-        let resp: Resp = self.gql(&query, serde_json::json!({}))?;
+        let resp: Resp = self.gql(&query, serde_json::json!({})).await?;
         Ok(resp.issues.nodes.iter().map(|i| self.linear_issue_to_summary(i)).collect())
     }
 
-    fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError> {
+    async fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError> {
         #[derive(Deserialize)]
         struct Resp {
             issue: LinearIssue,
@@ -352,11 +357,11 @@ impl Board for LinearBackend {
         let query = format!(
             "{{ issue(id: \"{id}\") {{ id title description url state {{ id name type }} creator {{ id displayName }} assignee {{ id displayName }} comments {{ nodes {{ id body createdAt user {{ id displayName }} }} }} children {{ nodes {{ id title url state {{ id name type }} }} }} labels {{ nodes {{ name }} }} }} }}"
         );
-        let resp: Resp = self.gql(&query, serde_json::json!({}))?;
+        let resp: Resp = self.gql(&query, serde_json::json!({})).await?;
         Ok(self.linear_issue_to_ticket(resp.issue))
     }
 
-    fn comment(&self, id: &str, text: &str) -> Result<(), OrgaError> {
+    async fn comment(&self, id: &str, text: &str) -> Result<(), OrgaError> {
         if text.is_empty() {
             return Err(OrgaError::BackendError("comment text cannot be empty".into()));
         }
@@ -368,12 +373,12 @@ impl Board for LinearBackend {
             comment_create: SuccessResp,
         }
         let query = format!("mutation($body: String!) {{ commentCreate(input: {{ issueId: \"{id}\", body: $body }}) {{ success }} }}");
-        let _: Resp = self.gql(&query, serde_json::json!({ "body": tagged }))?;
+        let _: Resp = self.gql(&query, serde_json::json!({ "body": tagged })).await?;
         Ok(())
     }
 
-    fn assign(&self, id: &str, username: &str) -> Result<(), OrgaError> {
-        let user_id = self.resolve_user_id(username)?;
+    async fn assign(&self, id: &str, username: &str) -> Result<(), OrgaError> {
+        let user_id = self.resolve_user_id(username).await?;
         #[derive(Deserialize)]
         #[allow(dead_code)]
         struct Resp {
@@ -381,41 +386,41 @@ impl Board for LinearBackend {
             issue_update: SuccessResp,
         }
         let query = format!("mutation {{ issueUpdate(id: \"{id}\", input: {{ assigneeId: \"{user_id}\" }}) {{ success }} }}");
-        let _: Resp = self.gql(&query, serde_json::json!({}))?;
+        let _: Resp = self.gql(&query, serde_json::json!({})).await?;
         Ok(())
     }
 
-    fn create_sub(&self, parent_id: &str, title: &str, description: Option<&str>, list: Option<&str>) -> Result<Ticket, OrgaError> {
+    async fn create_sub(&self, parent_id: &str, title: &str, description: Option<&str>, list: Option<&str>) -> Result<Ticket, OrgaError> {
         let state_id = if let Some(list_name) = list {
-            let states = self.team_states()?;
+            let states = self.team_states().await?;
             states
                 .into_iter()
                 .find(|s| s.name.eq_ignore_ascii_case(list_name))
                 .map(|s| s.id)
                 .ok_or_else(|| OrgaError::NotFound(format!("list '{list_name}'")))?  
         } else {
-            let parent = self.get_ticket(parent_id)?;
+            let parent = self.get_ticket(parent_id).await?;
             parent.summary.list_id
         };
-        let sub_id = self.create_sub_issue(parent_id, title, description, &state_id)?;
-        self.get_ticket(&sub_id)
+        let sub_id = self.create_sub_issue(parent_id, title, description, &state_id).await?;
+        self.get_ticket(&sub_id).await
     }
 
-    fn return_ticket(&self, id: &str, comment: Option<&str>) -> Result<(), OrgaError> {
-        let ticket = self.get_ticket(id)?;
+    async fn return_ticket(&self, id: &str, comment: Option<&str>) -> Result<(), OrgaError> {
+        let ticket = self.get_ticket(id).await?;
         let creator = ticket.summary.creator.ok_or_else(|| {
             OrgaError::BackendError("ticket has no known creator".into())
         })?;
         if let Some(text) = comment {
-            self.comment(id, text)?;
+            self.comment(id, text).await?;
         }
-        self.assign(id, &creator.username)?;
+        self.assign(id, &creator.username).await?;
         Ok(())
     }
 }
 
 impl LinearBackend {
-    fn create_sub_issue(&self, parent_id: &str, title: &str, description: Option<&str>, state_id: &str) -> Result<String, OrgaError> {
+    async fn create_sub_issue(&self, parent_id: &str, title: &str, description: Option<&str>, state_id: &str) -> Result<String, OrgaError> {
         #[derive(Deserialize)]
         struct Resp {
             #[serde(rename = "issueCreate")]
@@ -437,7 +442,7 @@ impl LinearBackend {
         if let Some(desc) = description {
             vars["description"] = serde_json::Value::String(desc.to_string());
         }
-        let resp: Resp = self.gql(&query, vars)?;
+        let resp: Resp = self.gql(&query, vars).await?;
         Ok(resp.issue_create.issue.id)
     }
 }
@@ -600,7 +605,7 @@ mod tests {
             team_id: "team-1".into(),
             agent_name: "agent-1".into(),
             viewer: Member { id: "viewer-1".into(), username: "agent".into(), full_name: "Agent".into() },
-            client: Client::new(),
+            client: Client::builder().build().unwrap(),
             logger,
         }
     }

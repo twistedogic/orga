@@ -299,6 +299,14 @@ impl AppConfig {
     }
 
     pub fn logger(&self) -> Logger {
+        self.make_logger(false)
+    }
+
+    pub fn agent_logger(&self) -> Logger {
+        self.make_logger(true)
+    }
+
+    fn make_logger(&self, stdout: bool) -> Logger {
         let path = self
             .logging
             .as_ref()
@@ -309,7 +317,7 @@ impl AppConfig {
             .as_ref()
             .and_then(|l| l.debug)
             .unwrap_or(false);
-        Logger::new(&expand_tilde(path), debug)
+        Logger::with_stdout(&expand_tilde(path), debug, stdout)
     }
 
     pub fn workflow_prompt(&self, list_name: &str) -> Option<&str> {
