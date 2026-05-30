@@ -25,6 +25,10 @@ impl WorkspaceStore {
         self.base.join(Self::sanitize_ticket_id(ticket_id))
     }
 
+    pub fn ticket_root_path(&self, ticket_id: &str) -> PathBuf {
+        self.ticket_root(ticket_id)
+    }
+
     fn safe_path(&self, ticket_id: &str, path: &str) -> Result<PathBuf, OrgaError> {
         let root = self.ticket_root(ticket_id);
         let joined = normalize_path(&root.join(path));

@@ -15,5 +15,5 @@ serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "1"
 tempfile = "3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process"] }
 toml = "0.8"

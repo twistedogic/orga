@@ -45,6 +45,7 @@ pub async fn dispatch(tool_name: &str, args: &str, ctx: &ToolContext) -> String 
         "read_file" => dispatch_read_file(args, ctx).await,
         "write_file" => dispatch_write_file(args, ctx).await,
         "list_files" => dispatch_list_files(ctx).await,
+        "bash" => dispatch_bash(args, ctx).await,
         other => format!("error: unknown tool '{other}'"),
     }
 }
@@ -338,6 +339,17 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": []
             }),
         },
+        ToolDefinition {
+            name: "bash".to_string(),
+            description: "Run a shell command in the ticket workspace directory. Returns structured JSON with stdout, stderr, and exit_code.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "Shell command to execute (passed to sh -c)" }
+                },
+                "required": ["command"]
+            }),
+        },
     ]
 }
 
@@ -384,6 +396,44 @@ async fn dispatch_write_file(args: &str, ctx: &ToolContext) -> String {
     match ws.write(&ctx.ticket_id, &parsed.path, &parsed.content) {
         Ok(()) => format!("wrote '{}'", parsed.path),
         Err(e) => format!("error: {e}"),
+    }
+}
+
+#[derive(Deserialize)]
+struct BashArgs {
+    command: String,
+}
+
+async fn dispatch_bash(args: &str, ctx: &ToolContext) -> String {
+    let parsed: BashArgs = match serde_json::from_str(args) {
+        Ok(a) => a,
+        Err(e) => return format!("error: invalid args: {e}"),
+    };
+    let ws = match &ctx.workspace {
+        Some(w) => w,
+        None => return "error: workspace not configured".to_string(),
+    };
+    let cwd = ws.ticket_root_path(&ctx.ticket_id);
+    if let Err(e) = std::fs::create_dir_all(&cwd) {
+        return format!("error: could not create workspace directory: {e}");
+    }
+    let run = async {
+        tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&parsed.command)
+            .current_dir(&cwd)
+            .output()
+            .await
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(120), run).await {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            let exit_code = output.status.code().unwrap_or(-1);
+            serde_json::json!({ "stdout": stdout, "stderr": stderr, "exit_code": exit_code }).to_string()
+        }
+        Ok(Err(e)) => format!("error: failed to spawn process: {e}"),
+        Err(_) => serde_json::json!({ "stdout": "", "stderr": "timeout: command exceeded 120s", "exit_code": -1 }).to_string(),
     }
 }
 
@@ -521,5 +571,68 @@ mod tests {
         assert!(is_terminal_tool("done"));
         assert!(is_terminal_tool("skip"));
         assert!(!is_terminal_tool("comment"));
+    }
+
+    fn make_ctx_with_workspace(dry_run: bool) -> (ToolContext, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("mem.db");
+        let ws = crate::workspace::WorkspaceStore::new(dir.path().to_path_buf());
+        let ctx = ToolContext {
+            ticket_id: "T-1".to_string(),
+            board: Box::new(MockBoard::new()),
+            memory_store: MemoryStore::open(&db_path).unwrap(),
+            compaction_store: CompactionStore::open(&db_path).unwrap(),
+            dry_run,
+            logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
+            workspace: Some(ws),
+        };
+        (ctx, dir)
+    }
+
+    #[tokio::test]
+    async fn dispatch_bash_returns_structured_json() {
+        let (ctx, _dir) = make_ctx_with_workspace(false);
+        let result = dispatch("bash", r#"{"command":"echo hello"}"#, &ctx).await;
+        let v: serde_json::Value = serde_json::from_str(&result).expect("should be valid JSON");
+        assert_eq!(v["stdout"].as_str().unwrap().trim(), "hello");
+        assert_eq!(v["stderr"].as_str().unwrap(), "");
+        assert_eq!(v["exit_code"].as_i64().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn dispatch_bash_captures_non_zero_exit_and_stderr() {
+        let (ctx, _dir) = make_ctx_with_workspace(false);
+        let result = dispatch("bash", r#"{"command":"ls /nonexistent_path_xyz 2>&1; exit 1"}"#, &ctx).await;
+        let v: serde_json::Value = serde_json::from_str(&result).expect("should be valid JSON");
+        assert_eq!(v["exit_code"].as_i64().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_bash_executes_in_workspace_dir() {
+        let (ctx, dir) = make_ctx_with_workspace(false);
+        let expected = dir.path().join("T-1").canonicalize().unwrap_or_else(|_| dir.path().join("T-1")).to_string_lossy().into_owned();
+        let result = dispatch("bash", r#"{"command":"pwd"}"#, &ctx).await;
+        let v: serde_json::Value = serde_json::from_str(&result).expect("should be valid JSON");
+        let actual = v["stdout"].as_str().unwrap().trim().to_string();
+        // resolve symlinks on both sides for macOS /private/var vs /var
+        let actual_canon = std::fs::canonicalize(&actual).unwrap_or_else(|_| std::path::PathBuf::from(&actual));
+        let expected_canon = std::fs::canonicalize(&expected).unwrap_or_else(|_| std::path::PathBuf::from(&expected));
+        assert_eq!(actual_canon, expected_canon);
+    }
+
+    #[tokio::test]
+    async fn dispatch_bash_without_workspace_returns_error() {
+        let ctx = make_ctx(false);
+        let result = dispatch("bash", r#"{"command":"echo hi"}"#, &ctx).await;
+        assert_eq!(result, "error: workspace not configured");
+    }
+
+    #[tokio::test]
+    async fn dispatch_bash_executes_in_dry_run() {
+        let (ctx, _dir) = make_ctx_with_workspace(true);
+        let result = dispatch("bash", r#"{"command":"echo dryrun"}"#, &ctx).await;
+        let v: serde_json::Value = serde_json::from_str(&result).expect("should be valid JSON");
+        assert_eq!(v["stdout"].as_str().unwrap().trim(), "dryrun");
+        assert_eq!(v["exit_code"].as_i64().unwrap(), 0);
     }
 }
