@@ -35,7 +35,6 @@ macro_rules! log_action {
 pub async fn dispatch(tool_name: &str, args: &str, ctx: &ToolContext) -> String {
     match tool_name {
         "comment" => dispatch_comment(args, ctx).await,
-        "assign" => dispatch_assign(args, ctx).await,
         "create_sub" => dispatch_create_sub(args, ctx).await,
         "set_memory" => dispatch_set_memory(args, ctx).await,
         "compact" => dispatch_compact(args, ctx).await,
@@ -72,26 +71,6 @@ async fn dispatch_comment(args: &str, ctx: &ToolContext) -> String {
     }
     match ctx.board.comment(&ctx.ticket_id, &parsed.text).await {
         Ok(()) => "comment posted".to_string(),
-        Err(e) => format!("error: {e}"),
-    }
-}
-
-#[derive(Deserialize)]
-struct AssignArgs {
-    username: String,
-}
-
-async fn dispatch_assign(args: &str, ctx: &ToolContext) -> String {
-    let parsed: AssignArgs = match serde_json::from_str(args) {
-        Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
-    };
-    log_action!(ctx, ctx.dry_run, format!("assign {} to @{}", ctx.ticket_id, parsed.username));
-    if ctx.dry_run {
-        return dry_run_msg(&format!("assign {} to @{}", ctx.ticket_id, parsed.username));
-    }
-    match ctx.board.assign(&ctx.ticket_id, &parsed.username).await {
-        Ok(()) => format!("assigned @{}", parsed.username),
         Err(e) => format!("error: {e}"),
     }
 }
@@ -213,17 +192,6 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "text": { "type": "string", "description": "The comment text to post" }
                 },
                 "required": ["text"]
-            }),
-        },
-        ToolDefinition {
-            name: "assign".to_string(),
-            description: "Assign the ticket to a teammate by their board username.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "username": { "type": "string", "description": "Board username (without @)" }
-                },
-                "required": ["username"]
             }),
         },
         ToolDefinition {

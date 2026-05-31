@@ -79,8 +79,7 @@ fn build_system_prompt(ticket: &Ticket, app_cfg: &AppConfig, skill_ctx: Option<&
 You communicate with teammates exclusively through ticket comments, \
 checklists, and board actions. You are a first-class board member alongside humans.\n\
 \n\
-Available tools: comment, move_ticket, assign, create_sub, add_checklist_item, check_item, \
-set_memory, compact, done, skip.\n\
+Available tools: comment, create_sub, set_memory, compact, bash, done, skip.\n\
 \n\
 Use `done(comment?)` when you have completed work on a ticket — this returns it to the creator.\n\
 Use `skip()` if the ticket is not actionable right now.",
