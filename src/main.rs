@@ -13,6 +13,7 @@ use orga::init::{run_agent_init, run_board_init};
 use orga::logging::Logger;
 use orga::memory::{CompactionStore, MemoryStore};
 use orga::models::{Column, CommentCompaction, Ticket, TicketSummary};
+use orga::systemd::install_service;
 
 #[derive(Parser)]
 #[command(
@@ -42,6 +43,15 @@ enum InitCommands {
 }
 
 #[derive(Subcommand)]
+enum SystemdCommands {
+    #[command(about = "Generate and install the orga-agent systemd service unit file")]
+    Install {
+        #[arg(long, help = "Install as a system-level service (requires root)")]
+        system: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
     #[command(subcommand, about = "Interactive setup wizard to create or update config")]
     Init(InitCommands),
@@ -53,6 +63,8 @@ enum Commands {
     Columns,
     #[command(about = "Show the configured agent's board identity")]
     Whoami,
+    #[command(subcommand, about = "Manage the orga-agent systemd service")]
+    Systemd(SystemdCommands),
     #[command(about = "Run the agent loop: poll tickets and act with an LLM")]
     Agent {
         #[arg(long, help = "Process the current ticket queue once and exit")]
@@ -144,11 +156,19 @@ fn main() {
     let default_logger = Logger::new(&orga::config::expand_tilde("~/.orga/orga.log"), false);
 
     let is_agent = matches!(cli.command, Commands::Agent { .. });
+    let is_systemd = matches!(cli.command, Commands::Systemd(_));
 
     if is_agent {
         let rt = tokio::runtime::Runtime::new().expect("failed to build tokio runtime");
         if let Err(e) = rt.block_on(run(cli)) {
             exit_error(&e.to_string(), &default_logger);
+        }
+    } else if is_systemd {
+        if let Commands::Systemd(SystemdCommands::Install { system }) = cli.command {
+            let config_path = AppConfig::resolve_path(cli.config.as_deref());
+            if let Err(e) = install_service(system, config_path.to_string_lossy().as_ref()) {
+                exit_error(&e.to_string(), &default_logger);
+            }
         }
     } else {
         let rt = tokio::runtime::Runtime::new().expect("failed to build tokio runtime");
@@ -186,6 +206,7 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
     match cli.command {
         Commands::Init(_) => unreachable!("init commands handled above"),
         Commands::Agent { .. } => unreachable!("agent command handled by run()"),
+        Commands::Systemd(_) => unreachable!("systemd handled in main()"),
         Commands::Columns => {
             let board = build_board(&config, Arc::clone(&logger)).await?;
             let columns = board.list_columns().await?;

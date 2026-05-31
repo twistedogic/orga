@@ -19,6 +19,15 @@ pub enum OrgaError {
 
     #[error("config error: {0}")]
     ConfigError(String),
+
+    #[error("systemd is only supported on Linux")]
+    SystemdNotLinux,
+
+    #[error("root privileges are required for system-level service installation")]
+    SystemdRootRequired,
+
+    #[error("failed to write systemd unit file: {0}")]
+    SystemdWriteFailed(String),
 }
 
 impl From<reqwest::Error> for OrgaError {
