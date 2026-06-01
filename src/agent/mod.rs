@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rig_core::client::CompletionClient;
-use rig_core::completion::{AssistantContent, CompletionModel, CompletionRequestBuilder, Message};
+use rig_core::completion::{AssistantContent, CompletionModel, CompletionRequest, Message};
 
 use crate::board::build_board;
 use crate::config::AppConfig;
@@ -185,7 +185,10 @@ where
     }
 
     let mut action_count = 0usize;
-    let mut history: Vec<Message> = Vec::new();
+    let mut history: Vec<Message> = vec![
+        Message::system(ctx_msg.system.clone()),
+        Message::user(ctx_msg.user.clone()),
+    ];
 
     loop {
         if action_count >= max_actions {
@@ -193,18 +196,21 @@ where
             break;
         }
 
-        let prompt_msg = if action_count == 0 {
-            ctx_msg.user.clone()
-        } else {
-            "Continue working on the ticket based on the tool results above.".to_string()
+        let req = CompletionRequest {
+            model: None,
+            preamble: None,
+            chat_history: rig_core::one_or_many::OneOrMany::many(history.clone())
+                .expect("history is non-empty"),
+            documents: vec![],
+            tools: tools.clone(),
+            temperature: None,
+            max_tokens: None,
+            tool_choice: None,
+            additional_params: None,
+            output_schema: None,
         };
 
-        let req = CompletionRequestBuilder::new(model.clone(), prompt_msg)
-            .preamble(ctx_msg.system.clone())
-            .messages(history.clone())
-            .tools(tools.clone());
-
-        let response = req.send().await.map_err(|e| {
+        let response = model.completion(req).await.map_err(|e| {
             OrgaError::BackendError(format!("LLM completion error for {ticket_id}: {e}"))
         })?;
 
@@ -215,12 +221,9 @@ where
             .filter_map(|c| if let AssistantContent::ToolCall(tc) = c { Some(tc.clone()) } else { None })
             .collect();
 
-        history.push(Message::assistant(
-            choices.iter()
-                .filter_map(|c| if let AssistantContent::Text(t) = c { Some(t.text.clone()) } else { None })
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
+        if let Ok(content) = rig_core::one_or_many::OneOrMany::many(choices) {
+            history.push(Message::Assistant { id: None, content });
+        }
 
         if tool_calls.is_empty() {
             logger.info(&format!("[agent] ticket {ticket_id}: LLM returned no tool calls, ending cycle"));
@@ -257,7 +260,7 @@ where
                 dispatch(name, &args, &tool_ctx).await
             };
 
-            logger.info(&format!("[agent] ticket {ticket_id}: tool '{name}' result={result}"));
+            logger.debug(&format!("[agent] ticket {ticket_id}: tool '{name}' result={result}"));
             history.push(Message::tool_result(tc.id.clone(), result.clone()));
 
             action_count += 1;
@@ -373,8 +376,10 @@ where
     ));
 
     let mut action_count = 0usize;
-    let mut history: Vec<Message> = Vec::new();
-    let mut last_text;
+    let mut history: Vec<Message> = vec![
+        Message::system(ctx_msg.system.clone()),
+        Message::user(ctx_msg.user.clone()),
+    ];
 
     loop {
         if action_count >= max_actions {
@@ -382,25 +387,28 @@ where
             return "error: subagent hit action cap without returning a result".to_string();
         }
 
-        let prompt_msg = if action_count == 0 {
-            ctx_msg.user.clone()
-        } else {
-            "Continue working on the task based on the tool results above.".to_string()
+        let req = CompletionRequest {
+            model: None,
+            preamble: None,
+            chat_history: rig_core::one_or_many::OneOrMany::many(history.clone())
+                .expect("history is non-empty"),
+            documents: vec![],
+            tools: tools.clone(),
+            temperature: None,
+            max_tokens: None,
+            tool_choice: None,
+            additional_params: None,
+            output_schema: None,
         };
 
-        let req = CompletionRequestBuilder::new(model.clone(), prompt_msg)
-            .preamble(ctx_msg.system.clone())
-            .messages(history.clone())
-            .tools(tools.clone());
-
-        let response = match req.send().await {
+        let response = match model.completion(req).await {
             Ok(r) => r,
             Err(e) => return format!("error: LLM completion error: {e}"),
         };
 
         let choices: Vec<AssistantContent> = response.choice.into_iter().collect();
 
-        last_text = choices.iter()
+        let last_text = choices.iter()
             .filter_map(|c| if let AssistantContent::Text(t) = c { Some(t.text.clone()) } else { None })
             .collect::<Vec<_>>()
             .join("\n");
@@ -409,7 +417,9 @@ where
             .filter_map(|c| if let AssistantContent::ToolCall(tc) = c { Some(tc.clone()) } else { None })
             .collect();
 
-        history.push(Message::assistant(last_text.clone()));
+        if let Ok(content) = rig_core::one_or_many::OneOrMany::many(choices) {
+            history.push(Message::Assistant { id: None, content });
+        }
 
         if tool_calls.is_empty() {
             logger.info(&format!("[subagent:{}] no tool calls, returning last text", sub_cfg.name));
@@ -450,7 +460,7 @@ where
 
             let result = dispatch(name, &args, &tool_ctx).await;
 
-            logger.info(&format!("[subagent:{}] tool '{name}' result={result}", sub_cfg.name));
+            logger.debug(&format!("[subagent:{}] tool '{name}' result={result}", sub_cfg.name));
 
             if name == "return" {
                 result_value = result.clone();
@@ -465,5 +475,59 @@ where
             logger.info(&format!("[subagent:{}] return called, finishing", sub_cfg.name));
             return result_value;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rig_core::completion::Message;
+
+    fn history_entry_for(tool_name: &str, tool_call_id: &str, result: &str) -> Message {
+        if tool_name == "dispatch" {
+            Message::user(result)
+        } else {
+            Message::tool_result(tool_call_id, result)
+        }
+    }
+
+    fn is_tool_result_message(msg: &Message) -> bool {
+        if let Message::User { content } = msg {
+            content.iter().any(|c| {
+                let s = serde_json::to_string(c).unwrap_or_default();
+                s.contains("\"type\":\"toolresult\"") || s.contains("\"type\":\"tool_result\"") || s.contains("tool_call_id")
+            })
+        } else {
+            false
+        }
+    }
+
+    fn is_plain_text_user_message(msg: &Message) -> bool {
+        if let Message::User { content } = msg {
+            content.iter().any(|c| {
+                let s = serde_json::to_string(c).unwrap_or_default();
+                s.contains("\"type\":\"text\"")
+            })
+        } else {
+            false
+        }
+    }
+
+    #[test]
+    fn dispatch_result_is_plain_user_message_not_tool_result() {
+        let msg = history_entry_for("dispatch", "call_main_abc", "subagent finished");
+        assert!(is_plain_text_user_message(&msg), "dispatch should produce a plain text user message");
+        assert!(!is_tool_result_message(&msg), "dispatch must NOT produce a tool_result message");
+    }
+
+    #[test]
+    fn comment_result_is_tool_result_message() {
+        let msg = history_entry_for("comment", "call_main_xyz", "comment posted");
+        assert!(is_tool_result_message(&msg), "comment should produce a tool_result message");
+    }
+
+    #[test]
+    fn done_result_is_tool_result_message() {
+        let msg = history_entry_for("done", "call_main_done", "done");
+        assert!(is_tool_result_message(&msg), "done should produce a tool_result message");
     }
 }
