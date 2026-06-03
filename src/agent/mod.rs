@@ -13,7 +13,7 @@ use crate::board::build_board;
 use crate::config::AppConfig;
 use crate::error::OrgaError;
 use crate::logging::Logger;
-use crate::memory::{CompactionStore, MemoryStore};
+use crate::memory::{CompactionStore, MemoryStore, TodoStore};
 use crate::workspace::WorkspaceStore;
 
 use config::{LlmClient, build_llm_client};
@@ -173,6 +173,7 @@ where
             "done".to_string(),
             "set_memory".to_string(),
             "compact".to_string(),
+            "todos".to_string(),
         ];
         tool_definitions_for(&main_agent_tools)
     };
@@ -233,12 +234,15 @@ where
         let tool_board = build_board(config, Arc::clone(&logger)).await?;
         let tool_memory = MemoryStore::open(&db_path)?;
         let tool_compaction = CompactionStore::open(&db_path)?;
+        let tool_todos = TodoStore::open(&db_path)?;
 
         let tool_ctx = ToolContext {
             ticket_id: ticket_id.to_string(),
+            agent_scope: "main".to_string(),
             board: tool_board,
             memory_store: tool_memory,
             compaction_store: tool_compaction,
+            todo_store: tool_todos,
             dry_run,
             logger: Arc::clone(&logger),
             workspace: config.workspace_base_path().map(WorkspaceStore::new),
@@ -368,6 +372,9 @@ where
     if !tool_names.contains(&"return".to_string()) {
         tool_names.push("return".to_string());
     }
+    if !tool_names.contains(&"todos".to_string()) {
+        tool_names.push("todos".to_string());
+    }
     let tools = tool_definitions_for(&tool_names);
 
     logger.info(&format!(
@@ -438,12 +445,18 @@ where
             Ok(c) => c,
             Err(e) => return format!("error opening compaction: {e}"),
         };
+        let tool_todos = match TodoStore::open(&db_path) {
+            Ok(t) => t,
+            Err(e) => return format!("error opening todo store: {e}"),
+        };
 
         let tool_ctx = ToolContext {
             ticket_id: ticket.summary.id.clone(),
+            agent_scope: sub_cfg.name.clone(),
             board: tool_board,
             memory_store: tool_memory,
             compaction_store: tool_compaction,
+            todo_store: tool_todos,
             dry_run,
             logger: Arc::clone(&logger),
             workspace: config.workspace_base_path().map(WorkspaceStore::new),

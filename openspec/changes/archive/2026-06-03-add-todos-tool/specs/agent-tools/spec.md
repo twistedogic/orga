@@ -1,9 +1,5 @@
-# agent-tools Specification
+## MODIFIED Requirements
 
-## Purpose
-Typed tool set exposed to the LLM during a ticket cycle. Each tool maps to an existing orga board, memory, or artifact operation. Dry-run mode suppresses all mutating tools while allowing read tools to execute.
-
-## Requirements
 ### Requirement: Tool set
 The agent loop SHALL expose the following tools to the LLM during a ticket cycle. Each tool SHALL correspond to an existing orga operation. In dry-run mode, mutating tools SHALL be logged but not executed; read tools SHALL execute normally. When subagents are configured, the main agent receives a narrowed tool set; subagents receive the tool set defined in their config plus `return` and `todos`. When no subagents are configured, the full tool set plus `todos` is exposed unchanged. `todos` SHALL always be available to all agents regardless of config.
 
@@ -18,7 +14,7 @@ The agent loop SHALL expose the following tools to the LLM during a ticket cycle
 | `return(result)` | subagent | no | terminates subagent loop |
 | `done(comment?)` | main agent | yes | `board.return_ticket()` |
 | `skip()` | main agent | no | ends cycle, no board action |
-| `todos(todos)` | all agents (always) | no | `TodoStore` scoped key |
+| `todos(todos)` | all agents (always) | no | `memory_store` scoped key |
 
 #### Scenario: todos always available to main agent
 - **WHEN** the main agent loop runs (with or without subagents configured)
@@ -47,14 +43,3 @@ The agent loop SHALL expose the following tools to the LLM during a ticket cycle
 #### Scenario: done tool without comment
 - **WHEN** the LLM calls `done()` with no comment
 - **THEN** `board.return_ticket(ticket_id, None)` is called
-
-#### Scenario: skip tool ends cycle silently
-- **WHEN** the LLM calls `skip()`
-- **THEN** no board mutation occurs and the cycle ends
-
-### Requirement: Tool error handling
-If a tool call fails (e.g., invalid ticket ID, network error, artifact not found), the error SHALL be returned as a `tool_result` with `is_error: true`. The cycle SHALL continue within the cap.
-
-#### Scenario: Tool error returned to LLM
-- **WHEN** a tool call fails due to a network or board error
-- **THEN** the error message is returned as a tool_result and the LLM receives it in the next turn

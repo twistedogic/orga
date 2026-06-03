@@ -275,7 +275,7 @@ impl AppConfig {
         const VALID_TOOLS: &[&str] = &[
             "comment", "move_ticket", "assign", "create_sub", "set_memory",
             "compact", "done", "skip",
-            "dispatch", "return", "bash",
+            "dispatch", "return", "bash", "todos",
         ];
         let mut seen_names = std::collections::HashSet::new();
         for sub in &self.subagents {

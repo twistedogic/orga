@@ -46,15 +46,23 @@ The user message SHALL include the following ticket metadata fields, in order: t
 - **THEN** the message SHALL still include title, ID, column, URL, creator, and assignees as before
 
 ### Requirement: Per-ticket LLM tool-call cycle
-For each selected ticket, the loop SHALL build a context (system prompt + ticket content) and run a bounded tool-call cycle with the LLM. The system prompt SHALL include an "## Available Skills" section listing all discovered skills when a skills folder is configured, and an "## Active Skills" section with full skill bodies for any skills that match the ticket. The cycle SHALL stop when the LLM calls `done()`, `skip()`, returns with no tool calls, or the `max_actions_per_ticket` cap is reached. When subagents are configured, the main agent cycle SHALL use a narrowed tool set (`comment`, `dispatch`, `skip`, `done`, `set_memory`, `compact`) and the system prompt SHALL include the names and descriptions of all configured subagents. When no subagents are configured, the existing flat loop behavior SHALL apply unchanged.
+For each selected ticket, the loop SHALL build a context (system prompt + ticket content) and run a bounded tool-call cycle with the LLM. The system prompt SHALL include an "## Available Skills" section listing all discovered skills when a skills folder is configured, and an "## Active Skills" section with full skill bodies for any skills that match the ticket. The cycle SHALL stop when the LLM calls `done()`, `skip()`, returns with no tool calls, or the `max_actions_per_ticket` cap is reached. When subagents are configured, the main agent cycle SHALL use a narrowed tool set (`comment`, `dispatch`, `skip`, `done`, `set_memory`, `compact`, `todos`) and the system prompt SHALL include the names and descriptions of all configured subagents. When no subagents are configured, the existing flat loop behavior SHALL apply unchanged, with `todos` added to the tool set. `ToolContext` SHALL carry an `agent_scope` field identifying the current agent: `"main"` for the main agent, and the subagent name for subagents.
+
+#### Scenario: ToolContext carries agent scope for main agent
+- **WHEN** the main agent loop constructs `ToolContext`
+- **THEN** `agent_scope` is set to `"main"`
+
+#### Scenario: ToolContext carries agent scope for subagent
+- **WHEN** the subagent loop constructs `ToolContext`
+- **THEN** `agent_scope` is set to the subagent's name as defined in config
 
 #### Scenario: Main agent cycle with subagents configured
 - **WHEN** subagents are configured and the main agent processes a ticket
-- **THEN** the system prompt includes subagent names and descriptions; the available tools are `comment`, `dispatch`, `skip`, `done`, `set_memory`, `compact`
+- **THEN** the system prompt includes subagent names and descriptions; the available tools are `comment`, `dispatch`, `skip`, `done`, `set_memory`, `compact`, `todos`
 
 #### Scenario: Main agent cycle without subagents configured
 - **WHEN** no subagents are configured
-- **THEN** the agent uses the full tool set and existing behavior unchanged
+- **THEN** the agent uses the full tool set including `todos` and existing behavior unchanged
 
 #### Scenario: Cycle completes with done()
 - **WHEN** the LLM calls the `done` tool during a ticket cycle

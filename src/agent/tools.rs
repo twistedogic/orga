@@ -1,18 +1,20 @@
 use std::sync::Arc;
 
 use rig_core::completion::ToolDefinition;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::board::Board;
 use crate::logging::Logger;
-use crate::memory::{CompactionStore, MemoryStore};
+use crate::memory::{CompactionStore, MemoryStore, TodoStore};
 use crate::workspace::WorkspaceStore;
 
 pub struct ToolContext {
     pub ticket_id: String,
+    pub agent_scope: String,
     pub board: Box<dyn Board>,
     pub memory_store: MemoryStore,
     pub compaction_store: CompactionStore,
+    pub todo_store: TodoStore,
     pub dry_run: bool,
     pub logger: Arc<Logger>,
     pub workspace: Option<WorkspaceStore>,
@@ -42,6 +44,7 @@ pub async fn dispatch(tool_name: &str, args: &str, ctx: &ToolContext) -> String 
         "skip" => "skip".to_string(),
         "return" => dispatch_return(args).await,
         "bash" => dispatch_bash(args, ctx).await,
+        "todos" => dispatch_todos(args, ctx).await,
         other => format!("error: unknown tool '{other}'"),
     }
 }
@@ -157,6 +160,91 @@ async fn dispatch_done(args: &str, ctx: &ToolContext) -> String {
         Ok(()) => "ticket returned to creator".to_string(),
         Err(e) => format!("error: {e}"),
     }
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+struct StoredTodoItem {
+    content: String,
+    status: String,
+    active_form: String,
+}
+
+#[derive(Deserialize)]
+struct TodosItem {
+    content: String,
+    status: String,
+    active_form: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TodosArgs {
+    todos: Vec<TodosItem>,
+}
+
+fn todos_scope_key(scope: &str) -> String {
+    scope.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect()
+}
+
+async fn dispatch_todos(args: &str, ctx: &ToolContext) -> String {
+    let parsed: TodosArgs = match serde_json::from_str(args) {
+        Ok(a) => a,
+        Err(e) => return format!("error: invalid args: {e}"),
+    };
+
+    for item in &parsed.todos {
+        match item.status.as_str() {
+            "pending" | "in_progress" | "completed" => {}
+            other => return format!("error: invalid status {:?} for todo {:?}", other, item.content),
+        }
+    }
+
+    let scope = todos_scope_key(&ctx.agent_scope);
+    let old_items: Vec<StoredTodoItem> = ctx.todo_store
+        .get(&ctx.ticket_id, &scope)
+        .unwrap_or(None)
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default();
+
+    let old_status: std::collections::HashMap<String, String> = old_items
+        .iter()
+        .map(|t| (t.content.clone(), t.status.clone()))
+        .collect();
+
+    let new_items: Vec<StoredTodoItem> = parsed.todos.iter().map(|t| StoredTodoItem {
+        content: t.content.clone(),
+        status: t.status.clone(),
+        active_form: t.active_form.clone().unwrap_or_default(),
+    }).collect();
+
+    let mut pending = 0usize;
+    let mut in_progress = 0usize;
+    let mut completed = 0usize;
+
+    for item in &new_items {
+        match item.status.as_str() {
+            "pending" => pending += 1,
+            "in_progress" => {
+                in_progress += 1;
+                let _ = old_status.get(&item.content);
+            }
+            "completed" => {
+                completed += 1;
+            }
+            _ => {}
+        }
+    }
+
+    let serialized = match serde_json::to_string(&new_items) {
+        Ok(s) => s,
+        Err(e) => return format!("error: failed to serialize todos: {e}"),
+    };
+    if let Err(e) = ctx.todo_store.set(&ctx.ticket_id, &scope, &serialized) {
+        return format!("error: failed to save todos: {e}");
+    }
+
+    format!(
+        "Todo list updated successfully.\n\nStatus: {pending} pending, {in_progress} in progress, {completed} completed\nTodos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable."
+    )
 }
 
 #[derive(Deserialize)]
@@ -283,6 +371,29 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["command"]
             }),
         },
+        ToolDefinition {
+            name: "todos".to_string(),
+            description: "Manage a structured task list for multi-step work; each task has pending/in_progress/completed state. Keep exactly one task in_progress at a time. Skip for simple or single-step tasks.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "The updated todo list",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": { "type": "string", "description": "What needs to be done (imperative form)" },
+                                "status": { "type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Task status" },
+                                "active_form": { "type": "string", "description": "Present continuous form (e.g., 'Running tests')" }
+                            },
+                            "required": ["content", "status"]
+                        }
+                    }
+                },
+                "required": ["todos"]
+            }),
+        },
     ]
 }
 
@@ -369,9 +480,11 @@ mod tests {
         let db_path = dir.keep().join("mem.db");
         ToolContext {
             ticket_id: "T-1".to_string(),
+            agent_scope: "main".to_string(),
             board: Box::new(MockBoard::new()),
             memory_store: MemoryStore::open(&db_path).unwrap(),
             compaction_store: CompactionStore::open(&db_path).unwrap(),
+            todo_store: crate::memory::TodoStore::open(&db_path).unwrap(),
             dry_run,
             logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
             workspace: None,
@@ -457,9 +570,11 @@ mod tests {
         let ws = crate::workspace::WorkspaceStore::new(dir.path().to_path_buf());
         let ctx = ToolContext {
             ticket_id: "T-1".to_string(),
+            agent_scope: "main".to_string(),
             board: Box::new(MockBoard::new()),
             memory_store: MemoryStore::open(&db_path).unwrap(),
             compaction_store: CompactionStore::open(&db_path).unwrap(),
+            todo_store: crate::memory::TodoStore::open(&db_path).unwrap(),
             dry_run,
             logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
             workspace: Some(ws),
@@ -512,5 +627,48 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&result).expect("should be valid JSON");
         assert_eq!(v["stdout"].as_str().unwrap().trim(), "dryrun");
         assert_eq!(v["exit_code"].as_i64().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn dispatch_todos_first_call_stores_list() {
+        let ctx = make_ctx(false);
+        let result = dispatch("todos", r#"{"todos":[{"content":"Do A","status":"pending","active_form":"Doing A"},{"content":"Do B","status":"in_progress","active_form":"Doing B"}]}"#, &ctx).await;
+        assert!(result.contains("Todo list updated successfully"));
+        assert!(result.contains("1 pending, 1 in progress, 0 completed"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_todos_invalid_status_returns_error() {
+        let ctx = make_ctx(false);
+        let result = dispatch("todos", r#"{"todos":[{"content":"Task","status":"done","active_form":""}]}"#, &ctx).await;
+        assert!(result.starts_with("error:"));
+        assert!(result.contains("invalid status"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_todos_transition_tracking() {
+        let ctx = make_ctx(false);
+        dispatch("todos", r#"{"todos":[{"content":"Task A","status":"in_progress","active_form":"Working"},{"content":"Task B","status":"pending","active_form":""}]}"#, &ctx).await;
+        let result = dispatch("todos", r#"{"todos":[{"content":"Task A","status":"completed","active_form":"Working"},{"content":"Task B","status":"in_progress","active_form":"Doing B"}]}"#, &ctx).await;
+        assert!(result.contains("0 pending, 1 in progress, 1 completed"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_todos_scope_key_sanitization() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.keep().join("mem.db");
+        let ctx = ToolContext {
+            ticket_id: "T-1".to_string(),
+            agent_scope: "my-sub agent!".to_string(),
+            board: Box::new(MockBoard::new()),
+            memory_store: MemoryStore::open(&db_path).unwrap(),
+            compaction_store: CompactionStore::open(&db_path).unwrap(),
+            todo_store: crate::memory::TodoStore::open(&db_path).unwrap(),
+            dry_run: false,
+            logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
+            workspace: None,
+        };
+        let result = dispatch("todos", r#"{"todos":[{"content":"Task","status":"pending","active_form":""}]}"#, &ctx).await;
+        assert!(result.contains("Todo list updated successfully"));
     }
 }
