@@ -37,15 +37,6 @@ pub struct MemoryConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct WorkflowEntry {
-    pub column: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_file: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceConfig {
     pub path: String,
 }
@@ -126,8 +117,6 @@ pub struct AppConfig {
     pub logging: Option<LoggingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmConfig>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub workflow: Vec<WorkflowEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comment_compaction_threshold: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -240,37 +229,6 @@ impl AppConfig {
                 ));
             }
         }
-        for entry in &mut self.workflow {
-            match (&entry.prompt, &entry.prompt_file) {
-                (Some(_), Some(_)) => {
-                    return Err(OrgaError::ConfigError(format!(
-                        "workflow entry for column '{}': specify either 'prompt' or 'prompt_file', not both",
-                        entry.column
-                    )));
-                }
-                (None, None) => {
-                    return Err(OrgaError::ConfigError(format!(
-                        "workflow entry for column '{}': must specify either 'prompt' or 'prompt_file'",
-                        entry.column
-                    )));
-                }
-                (None, Some(path)) => {
-                    let expanded = expand_tilde(path);
-                    let text = fs::read_to_string(&expanded).map_err(|e| {
-                        OrgaError::ConfigError(format!(
-                            "workflow entry for column '{}': cannot read prompt_file '{}': {}",
-                            entry.column,
-                            expanded.display(),
-                            e
-                        ))
-                    })?;
-                    entry.prompt = Some(text);
-                    entry.prompt_file = None;
-                }
-                (Some(_), None) => {}
-            }
-        }
-
         // Validate subagents
         const VALID_TOOLS: &[&str] = &[
             "comment", "move_ticket", "assign", "create_sub", "set_memory",
@@ -320,12 +278,8 @@ impl AppConfig {
         Logger::with_stdout(&expand_tilde(path), debug, stdout)
     }
 
-    pub fn workflow_prompt(&self, list_name: &str) -> Option<&str> {
-        let lower = list_name.to_lowercase();
-        self.workflow
-            .iter()
-            .find(|e| e.column.to_lowercase() == lower)
-            .and_then(|e| e.prompt.as_deref())
+    pub fn agents_md_path(&self) -> Option<PathBuf> {
+        self.workspace_base_path().map(|p| p.join("AGENTS.md"))
     }
 
     pub fn compaction_threshold(&self) -> usize {
@@ -556,91 +510,6 @@ backend = "trello"
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.memory_db_path(), PathBuf::from("/tmp/test.db"));
-    }
-
-    #[test]
-    fn workflow_inline_prompt_loads() {
-        let content = format!(
-            "{VALID_CONFIG}\n[[workflow]]\ncolumn = \"To Do\"\nprompt = \"Enter explore mode.\"\n"
-        );
-        let f = write_config(&content);
-        let cfg = AppConfig::load(f.path()).unwrap();
-        assert_eq!(cfg.workflow.len(), 1);
-        assert_eq!(cfg.workflow[0].prompt.as_deref(), Some("Enter explore mode."));
-    }
-
-    #[test]
-    fn workflow_prompt_file_loads() {
-        let mut prompt_file = NamedTempFile::new().unwrap();
-        prompt_file.write_all(b"Think deeply.").unwrap();
-        let path = prompt_file.path().to_str().unwrap().to_owned();
-        let content = format!(
-            "{VALID_CONFIG}\n[[workflow]]\ncolumn = \"To Do\"\nprompt_file = \"{path}\"\n"
-        );
-        let f = write_config(&content);
-        let cfg = AppConfig::load(f.path()).unwrap();
-        assert_eq!(cfg.workflow[0].prompt.as_deref(), Some("Think deeply."));
-    }
-
-    #[test]
-    fn workflow_prompt_file_missing_fails() {
-        let content = format!(
-            "{VALID_CONFIG}\n[[workflow]]\ncolumn = \"To Do\"\nprompt_file = \"/nonexistent/prompt.md\"\n"
-        );
-        let f = write_config(&content);
-        let err = AppConfig::load(f.path()).unwrap_err();
-        assert!(err.to_string().contains("cannot read prompt_file"));
-    }
-
-    #[test]
-    fn workflow_both_prompt_and_prompt_file_fails() {
-        let content = format!(
-            "{VALID_CONFIG}\n[[workflow]]\ncolumn = \"To Do\"\nprompt = \"foo\"\nprompt_file = \"/some/path\"\n"
-        );
-        let f = write_config(&content);
-        let err = AppConfig::load(f.path()).unwrap_err();
-        assert!(err.to_string().contains("not both"));
-    }
-
-    #[test]
-    fn workflow_neither_prompt_nor_prompt_file_fails() {
-        let content = format!(
-            "{VALID_CONFIG}\n[[workflow]]\ncolumn = \"To Do\"\n"
-        );
-        let f = write_config(&content);
-        let err = AppConfig::load(f.path()).unwrap_err();
-        assert!(err.to_string().contains("must specify either"));
-    }
-
-    #[test]
-    fn workflow_prompt_exact_case_match() {
-        let content = format!(
-            "{VALID_CONFIG}\n[[workflow]]\ncolumn = \"To Do\"\nprompt = \"Explore.\"\n"
-        );
-        let f = write_config(&content);
-        let cfg = AppConfig::load(f.path()).unwrap();
-        assert_eq!(cfg.workflow_prompt("To Do"), Some("Explore."));
-    }
-
-    #[test]
-    fn workflow_prompt_case_insensitive_match() {
-        let content = format!(
-            "{VALID_CONFIG}\n[[workflow]]\ncolumn = \"To Do\"\nprompt = \"Explore.\"\n"
-        );
-        let f = write_config(&content);
-        let cfg = AppConfig::load(f.path()).unwrap();
-        assert_eq!(cfg.workflow_prompt("to do"), Some("Explore."));
-        assert_eq!(cfg.workflow_prompt("TO DO"), Some("Explore."));
-    }
-
-    #[test]
-    fn workflow_prompt_no_match_returns_none() {
-        let content = format!(
-            "{VALID_CONFIG}\n[[workflow]]\ncolumn = \"To Do\"\nprompt = \"Explore.\"\n"
-        );
-        let f = write_config(&content);
-        let cfg = AppConfig::load(f.path()).unwrap();
-        assert_eq!(cfg.workflow_prompt("In Progress"), None);
     }
 
     #[test]
@@ -956,10 +825,8 @@ model = "claude-opus-4-5"
         let f = write_config(VALID_CONFIG);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert!(cfg.subagents.is_empty());
-        assert!(cfg.workflow.is_empty());
         let toml_str = toml::to_string(&cfg).unwrap();
         assert!(!toml_str.contains("[[subagents]]"));
-        assert!(!toml_str.contains("[[workflow]]"));
     }
 
     #[test]

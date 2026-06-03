@@ -150,6 +150,9 @@ where
             .map(|s| (s.name.clone(), s.description.clone()))
             .collect();
 
+        let agents_md = config.agents_md_path()
+            .and_then(|p| std::fs::read_to_string(p).ok());
+
         build_context(
             &ticket,
             &memory_store,
@@ -157,6 +160,7 @@ where
             config,
             skill_ctx.as_ref(),
             &subagent_descs,
+            agents_md.as_deref(),
         )
     };
 

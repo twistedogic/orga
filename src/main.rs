@@ -277,7 +277,6 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                     } else if ticket.comments.len() > config.compaction_threshold() {
                         ticket.compaction_suggested = true;
                     }
-                    let workflow_prompt = config.workflow_prompt(&ticket.summary.list_name);
                     let skill_hints: Vec<(String, String)> = config
                         .skills_path()
                         .map(|p| {
@@ -290,18 +289,12 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                         .unwrap_or_default();
                     if cli.json {
                         let mut val = serde_json::to_value(&ticket).unwrap();
-                        if let Some(prompt) = workflow_prompt {
-                            val["workflow_prompt"] = serde_json::json!(prompt);
-                        }
                         val["skill_hints"] = serde_json::json!(
                             skill_hints.iter().map(|(n, d)| json!({"name": n, "description": d})).collect::<Vec<_>>()
                         );
                         println!("{}", serde_json::to_string_pretty(&val).unwrap());
                     } else {
                         print_ticket_detail(&ticket);
-                        if let Some(prompt) = workflow_prompt {
-                            println!("\n## Workflow\n{}", prompt);
-                        }
                         if !skill_hints.is_empty() {
                             println!("\n## Skills");
                             for (name, desc) in &skill_hints {

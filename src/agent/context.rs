@@ -20,8 +20,9 @@ pub fn build_context(
     app_cfg: &AppConfig,
     skill_ctx: Option<&SkillContext>,
     subagents: &[(String, String)],
+    agents_md: Option<&str>,
 ) -> TicketContext {
-    let system = build_system_prompt(ticket, app_cfg, skill_ctx, subagents);
+    let system = build_system_prompt(ticket, app_cfg, skill_ctx, subagents, agents_md);
     let user = build_user_message(ticket, memory_store, llm_cfg);
     TicketContext { system, user }
 }
@@ -71,7 +72,7 @@ Do NOT call `comment`, `done`, or `skip` unless they are in your available tools
     parts.join("\n")
 }
 
-fn build_system_prompt(ticket: &Ticket, app_cfg: &AppConfig, skill_ctx: Option<&SkillContext>, subagents: &[(String, String)]) -> String {
+fn build_system_prompt(_ticket: &Ticket, app_cfg: &AppConfig, skill_ctx: Option<&SkillContext>, subagents: &[(String, String)], agents_md: Option<&str>) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     if subagents.is_empty() {
@@ -117,8 +118,8 @@ Use `skip()` if the ticket is not actionable right now.",
             parts.push(section);
         }
 
-    if let Some(prompt) = app_cfg.workflow_prompt(&ticket.summary.list_name) {
-        parts.push(format!("\n## Column Instructions\n{}", prompt));
+    if let Some(md) = agents_md {
+        parts.push(format!("\n## Agent Instructions\n{}", md));
     }
 
     if let Some(ctx) = skill_ctx
@@ -247,7 +248,6 @@ mod tests {
             memory: None,
             logging: None,
             llm: None,
-            workflow: vec![],
             comment_compaction_threshold: None,
             skills: None,
             workspace: None,
@@ -264,7 +264,7 @@ mod tests {
         let ticket = make_ticket("Fix the bug");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
         assert!(ctx.user.contains("Test Ticket"));
         assert!(ctx.user.contains("Fix the bug"));
     }
@@ -274,7 +274,7 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
         assert!(ctx.system.contains("bot-1"));
     }
 
@@ -284,7 +284,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
         mem.set("T-1", "remember this context").unwrap();
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
         assert!(ctx.user.contains("remember this context"));
     }
 
@@ -293,7 +293,7 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
         assert!(!ctx.user.contains("Agent Memory"));
     }
 
@@ -307,7 +307,7 @@ mod tests {
         });
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
         assert!(ctx.user.contains("first 10 comments: auth work"));
     }
 
@@ -323,7 +323,7 @@ mod tests {
             ],
             active: vec![],
         };
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
         assert!(ctx.system.contains("## Available Skills"));
         assert!(ctx.system.contains("**code-review**"));
         assert!(ctx.system.contains("**security**"));
@@ -338,7 +338,7 @@ mod tests {
             available: vec![("code-review".to_string(), "Reviews code.".to_string())],
             active: vec![("code-review".to_string(), "Follow these steps to review code.".to_string())],
         };
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
         assert!(ctx.system.contains("## Active Skills"));
         assert!(ctx.system.contains("### code-review"));
         assert!(ctx.system.contains("Follow these steps to review code."));
@@ -349,7 +349,7 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
         assert!(!ctx.system.contains("## Available Skills"));
         assert!(!ctx.system.contains("## Active Skills"));
     }
@@ -363,7 +363,7 @@ mod tests {
             available: vec![("s".to_string(), "desc".to_string())],
             active: vec![],
         };
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[]);
+        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
         assert!(ctx.system.contains("## Available Skills"));
         assert!(!ctx.system.contains("## Active Skills"));
     }
