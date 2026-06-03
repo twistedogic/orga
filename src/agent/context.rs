@@ -1,3 +1,4 @@
+use chrono::Local;
 use crate::config::{AppConfig, LlmConfig, SubagentConfig};
 use crate::memory::MemoryStore;
 use crate::models::Ticket;
@@ -143,6 +144,7 @@ fn build_user_message(
     parts.push(format!("**ID:** {}", ticket.summary.id));
     parts.push(format!("**Column:** {}", ticket.summary.list_name));
     parts.push(format!("**URL:** {}", ticket.summary.url));
+    parts.push(format!("**Today's date:** {}", Local::now().format("%Y-%m-%d")));
 
     if let Some(ref creator) = ticket.summary.creator {
         parts.push(format!("**Creator:** @{}", creator.username));

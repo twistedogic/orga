@@ -34,6 +34,17 @@ The loop SHALL only process tickets where the last commenter is not the agent (i
 - **WHEN** a ticket has `last_commenter_is_agent = true`
 - **THEN** that ticket is skipped for this cycle
 
+### Requirement: User message contains ticket metadata
+The user message SHALL include the following ticket metadata fields, in order: title, ID, column, URL, today's date, creator (if present), and assignees (if present).
+
+#### Scenario: User message includes today's date field
+- **WHEN** any agent (main or subagent) constructs a user message
+- **THEN** the message SHALL include `**Today's date:** YYYY-MM-DD` after the URL field and before the creator field
+
+#### Scenario: User message includes all other metadata
+- **WHEN** any agent constructs a user message
+- **THEN** the message SHALL still include title, ID, column, URL, creator, and assignees as before
+
 ### Requirement: Per-ticket LLM tool-call cycle
 For each selected ticket, the loop SHALL build a context (system prompt + ticket content) and run a bounded tool-call cycle with the LLM. The system prompt SHALL include an "## Available Skills" section listing all discovered skills when a skills folder is configured, and an "## Active Skills" section with full skill bodies for any skills that match the ticket. The cycle SHALL stop when the LLM calls `done()`, `skip()`, returns with no tool calls, or the `max_actions_per_ticket` cap is reached. When subagents are configured, the main agent cycle SHALL use a narrowed tool set (`comment`, `dispatch`, `skip`, `done`, `set_memory`, `compact`) and the system prompt SHALL include the names and descriptions of all configured subagents. When no subagents are configured, the existing flat loop behavior SHALL apply unchanged.
 
