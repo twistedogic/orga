@@ -11,7 +11,7 @@ use orga::config::AppConfig;
 use orga::error::OrgaError;
 use orga::init::{run_agent_init, run_board_init};
 use orga::logging::Logger;
-use orga::memory::{CompactionStore, MemoryStore};
+use orga::memory::{CompactionStore, ContextRepository};
 use orga::models::{Column, CommentCompaction, Ticket, TicketSummary};
 use orga::systemd::install_service;
 
@@ -57,7 +57,7 @@ enum Commands {
     Init(InitCommands),
     #[command(subcommand, about = "Manage tickets on the board")]
     Ticket(TicketCommands),
-    #[command(subcommand, about = "Read and write per-ticket memory")]
+    #[command(subcommand, about = "Manage the topic-organized context repository")]
     Memory(MemoryCommands),
     #[command(about = "List all columns on the board")]
     Columns,
@@ -137,17 +137,33 @@ enum TicketCommands {
 
 #[derive(Subcommand)]
 enum MemoryCommands {
-    #[command(about = "Save working context for a ticket (overwrites previous value)")]
-    Set {
-        #[arg(help = "Ticket ID")]
-        ticket_id: String,
-        #[arg(help = "Context text to store")]
-        context: String,
+    #[command(about = "List all topic files in the context repository")]
+    List,
+    #[command(about = "Read a topic file from the context repository")]
+    Read {
+        #[arg(help = "Relative path to the file (e.g. themes/auth.md)")]
+        path: String,
     },
-    #[command(about = "Retrieve saved working context for a ticket")]
-    Get {
-        #[arg(help = "Ticket ID")]
-        ticket_id: String,
+    #[command(about = "Write a topic file to the context repository")]
+    Write {
+        #[arg(help = "Relative path to write (e.g. themes/auth.md)")]
+        path: String,
+        #[arg(help = "File content")]
+        content: String,
+        #[arg(long, help = "Git commit message (default: write: <path>)")]
+        message: Option<String>,
+    },
+    #[command(about = "Search across all context repository files")]
+    Search {
+        #[arg(help = "Search query (case-insensitive)")]
+        query: String,
+    },
+    #[command(about = "Run a defragmentation pass to reorganize the context repository")]
+    Defrag,
+    #[command(about = "Delete a topic file (blocked if its topics are not covered elsewhere)")]
+    Delete {
+        #[arg(help = "Relative path to delete (e.g. themes/old-notes.md)")]
+        path: String,
     },
 }
 
@@ -375,26 +391,89 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
             }
         }
         Commands::Memory(cmd) => {
-            let db_path = config.memory_db_path();
-            let store = MemoryStore::open(&db_path)?;
+            let repo = ContextRepository::open(&config.memory_repo_path(), &config.agent.name)?;
             match cmd {
-                MemoryCommands::Set { ticket_id, context } => {
-                    store.set(&ticket_id, &context)?;
+                MemoryCommands::List => {
+                    let entries = repo.list()?;
                     if cli.json {
-                        println!("{}", json!({"ok": true}));
+                        let arr: Vec<_> = entries.iter()
+                            .map(|e| json!({"path": e.path, "description": e.description}))
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&arr).unwrap());
                     } else {
-                        println!("memory saved for {ticket_id}");
+                        for e in &entries {
+                            if e.description.is_empty() {
+                                println!("{}", e.path);
+                            } else {
+                                println!("{} — {}", e.path, e.description);
+                            }
+                        }
                     }
                 }
-                MemoryCommands::Get { ticket_id } => {
-                    let entry = store.get(&ticket_id)?;
+                MemoryCommands::Read { path } => {
+                    let content = repo.read(&path)?;
                     if cli.json {
-                        match entry {
-                            Some(e) => println!("{}", serde_json::to_string_pretty(&e).unwrap()),
-                            None => println!("{}", json!({"ticket_id": ticket_id, "context": null})),
+                        println!("{}", json!({"path": path, "content": content}));
+                    } else {
+                        print!("{}", content);
+                    }
+                }
+                MemoryCommands::Write { path, content, message } => {
+                    let commit_msg = message.unwrap_or_else(|| format!("write: {path}"));
+                    repo.write(&path, &content, &commit_msg)?;
+                    if cli.json {
+                        println!("{}", json!({"ok": true, "path": path}));
+                    } else {
+                        println!("written: {path}");
+                    }
+                }
+                MemoryCommands::Search { query } => {
+                    let results = repo.search(&query)?;
+                    if cli.json {
+                        let arr: Vec<_> = results.iter()
+                            .map(|(path, line_no, line)| json!({"path": path, "line": line_no, "content": line}))
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&arr).unwrap());
+                    } else {
+                        for (path, line_no, line) in &results {
+                            println!("{}:{}: {}", path, line_no, line);
                         }
-                    } else if let Some(e) = entry {
-                        println!("{}", e.context);
+                    }
+                }
+                MemoryCommands::Defrag => {
+                    let report = repo.analyze()?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                    } else if report.is_empty() {
+                        // silent exit on clean repo
+                    } else {
+                        if !report.oversized.is_empty() {
+                            println!("Oversized files (>200 lines):");
+                            for f in &report.oversized {
+                                println!("  {}  — {} lines", f.path, f.line_count);
+                            }
+                        }
+                        if !report.duplicates.is_empty() {
+                            println!("\nDuplicate candidates (shared description terms):");
+                            for d in &report.duplicates {
+                                println!("  {} ↔ {}", d.path_a, d.path_b);
+                                println!("    shared: {}", d.shared_terms.join(", "));
+                            }
+                        }
+                        if !report.deletion_candidates.is_empty() {
+                            println!("\nDeletion candidates (content covered elsewhere):");
+                            for c in &report.deletion_candidates {
+                                println!("  {}  — covered by: {}", c.path, c.covered_by);
+                            }
+                        }
+                    }
+                }
+                MemoryCommands::Delete { path } => {
+                    repo.delete(&path)?;
+                    if cli.json {
+                        println!("{}", json!({"ok": true, "path": path}));
+                    } else {
+                        println!("deleted: {path}");
                     }
                 }
             }

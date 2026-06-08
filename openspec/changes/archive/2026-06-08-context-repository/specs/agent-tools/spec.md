@@ -1,9 +1,10 @@
-# agent-tools Specification
+## REMOVED Requirements
 
-## Purpose
-Typed tool set exposed to the LLM during a ticket cycle. Each tool maps to an existing orga board, memory, or artifact operation. Dry-run mode suppresses all mutating tools while allowing read tools to execute.
+### Requirement: set_memory tool in tool set
+**Reason**: Replaced by `memory_write` (and the broader `memory-tools` capability). `set_memory` was ticket-scoped; `memory_write` is topic-scoped and writes to the git-backed context repository.
+**Migration**: Agents use `memory_write(path, content, commit_msg)` instead of `set_memory(context)`.
 
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Tool set
 The agent loop SHALL expose the following tools to the LLM during a ticket cycle. Each tool SHALL correspond to an existing orga operation. In dry-run mode, mutating tools SHALL be logged but not executed; read tools SHALL execute normally. When subagents are configured, the main agent receives a narrowed tool set; subagents receive the tool set defined in their config plus `return` and `todos`. When no subagents are configured, the full tool set plus `todos` is exposed unchanged. `todos` SHALL always be available to all agents regardless of config. The four memory tools (`memory_list`, `memory_read`, `memory_write`, `memory_search`) SHALL always be available to all agents regardless of config.
@@ -51,26 +52,3 @@ The agent loop SHALL expose the following tools to the LLM during a ticket cycle
 #### Scenario: set_memory tool no longer present
 - **WHEN** the main agent loop runs
 - **THEN** `set_memory` is NOT present in tool definitions
-
-#### Scenario: comment tool posts to board
-- **WHEN** the LLM calls `comment(text: "update: work started")`
-- **THEN** `board.comment(ticket_id, text)` is called and the result is returned to the LLM
-
-#### Scenario: done tool returns ticket
-- **WHEN** the LLM calls `done(comment: "work complete")`
-- **THEN** `board.return_ticket(ticket_id, Some("work complete"))` is called and the cycle ends
-
-#### Scenario: done tool without comment
-- **WHEN** the LLM calls `done()` with no comment
-- **THEN** `board.return_ticket(ticket_id, None)` is called
-
-#### Scenario: skip tool ends cycle silently
-- **WHEN** the LLM calls `skip()`
-- **THEN** no board mutation occurs and the cycle ends
-
-### Requirement: Tool error handling
-If a tool call fails (e.g., invalid ticket ID, network error, artifact not found), the error SHALL be returned as a `tool_result` with `is_error: true`. The cycle SHALL continue within the cap.
-
-#### Scenario: Tool error returned to LLM
-- **WHEN** a tool call fails due to a network or board error
-- **THEN** the error message is returned as a tool_result and the LLM receives it in the next turn

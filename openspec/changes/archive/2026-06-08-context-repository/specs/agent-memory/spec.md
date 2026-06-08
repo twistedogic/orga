@@ -1,9 +1,22 @@
-# agent-memory Specification
+## REMOVED Requirements
 
-## Purpose
-Topic-organized, git-backed context repository for agent memory. Memory is organized by topic (themes, patterns, people, architecture) rather than per-ticket, enabling cross-ticket recall and cumulative learning.
+### Requirement: Per-ticket memory store
+**Reason**: Replaced by the topic-organized context repository (`context-repository` capability). Per-ticket SQLite memory does not support cross-ticket recall, provides no structure for theme/pattern organization, and is opaque to human inspection.
+**Migration**: No automated migration. Existing `~/.orga/memory.db` is abandoned. The new context repository is initialized fresh at `~/.orga/memory/`. Agents will build up topic knowledge organically through the sleep-time agent after each `done()`.
 
-## Requirements
+### Requirement: Memory set command
+**Reason**: Replaced by `orga memory write <path> <content>` — topic-path-based writes replace ticket-ID-based blob writes.
+**Migration**: Use `orga memory write <topic-path> "<content>"` to write topic files directly.
+
+### Requirement: Memory get command
+**Reason**: Replaced by `orga memory read <path>` and `orga memory list` — topic-path reads replace ticket-ID blob reads.
+**Migration**: Use `orga memory list` to see available topics, then `orga memory read <path>` to read a specific file.
+
+### Requirement: Memory database initialization
+**Reason**: Replaced by git repository initialization in the `context-repository` capability.
+**Migration**: The context repository is initialized automatically at `~/.orga/memory/` on first use.
+
+## ADDED Requirements
 
 ### Requirement: Topic-organized context repository
 The system SHALL provide a local context repository organized as topic-named markdown files in a git-backed directory. The repository SHALL persist across CLI invocations. The default path SHALL be `~/.orga/memory/`, overridable via `[memory] path` in config.

@@ -34,6 +34,10 @@ pub struct TrelloConfig {
 pub struct MemoryConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defrag_file_threshold: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defrag_size_threshold_kb: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -176,6 +180,29 @@ impl AppConfig {
         expand_tilde(raw)
     }
 
+    pub fn memory_repo_path(&self) -> PathBuf {
+        let raw = self
+            .memory
+            .as_ref()
+            .and_then(|m| m.path.as_deref())
+            .unwrap_or("~/.orga/memory");
+        expand_tilde(raw)
+    }
+
+    pub fn defrag_file_threshold(&self) -> usize {
+        self.memory
+            .as_ref()
+            .and_then(|m| m.defrag_file_threshold)
+            .unwrap_or(20)
+    }
+
+    pub fn defrag_size_threshold_kb(&self) -> u64 {
+        self.memory
+            .as_ref()
+            .and_then(|m| m.defrag_size_threshold_kb)
+            .unwrap_or(50)
+    }
+
     fn validate(&mut self) -> Result<(), OrgaError> {
         const SUPPORTED: &[&str] = &["trello", "linear"];
         if !SUPPORTED.contains(&self.board.backend.as_str()) {
@@ -231,9 +258,10 @@ impl AppConfig {
         }
         // Validate subagents
         const VALID_TOOLS: &[&str] = &[
-            "comment", "move_ticket", "assign", "create_sub", "set_memory",
+            "comment", "move_ticket", "assign", "create_sub",
             "compact", "done", "skip",
             "dispatch", "return", "bash", "todos",
+            "memory_list", "memory_read", "memory_write", "memory_search",
         ];
         let mut seen_names = std::collections::HashSet::new();
         for sub in &self.subagents {

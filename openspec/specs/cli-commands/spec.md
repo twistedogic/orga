@@ -206,3 +206,70 @@ The CLI SHALL expose a top-level `systemd` subcommand with an `install` sub-subc
 #### Scenario: --system flag accepted
 - **WHEN** `orga systemd install --system` is invoked
 - **THEN** the command proceeds with system-level placement logic
+
+### Requirement: memory list subcommand
+The CLI SHALL provide `orga memory list` to output the context repository file tree. With `--json`, output SHALL be a JSON array of `{"path": "...", "description": "..."}` objects.
+
+#### Scenario: memory list in command reference
+- **WHEN** `orga memory list --json` is called
+- **THEN** a JSON array of topic file entries is returned
+
+### Requirement: memory read subcommand
+The CLI SHALL provide `orga memory read <path>` to output the full content of a topic file. With `--json`, output SHALL be `{"path": "...", "content": "..."}`.
+
+#### Scenario: memory read in command reference
+- **WHEN** `orga memory read <path>` is called with a valid path
+- **THEN** the file content is printed to stdout
+
+### Requirement: memory write subcommand
+The CLI SHALL provide `orga memory write <path> <content>` to write (create or overwrite) a topic file. An optional `--message` flag sets the commit message.
+
+#### Scenario: memory write in command reference
+- **WHEN** `orga memory write <path> "<content>"` is called
+- **THEN** the file is written and committed
+
+### Requirement: memory search subcommand
+The CLI SHALL provide `orga memory search <query>` to search across all `.md` files in the context repository. With `--json`, output SHALL be a JSON array of `{"path": "...", "line": N, "content": "..."}` objects.
+
+#### Scenario: memory search in command reference
+- **WHEN** `orga memory search "<query>"` is called
+- **THEN** matching lines are returned with file path and line number
+
+### Requirement: memory defrag subcommand
+The CLI SHALL provide `orga memory defrag` as a read-only analysis report of the context repository. It SHALL NOT invoke an LLM or mutate any files. With `--json`, output SHALL be a structured JSON object.
+
+The report SHALL include three sections:
+1. **Oversized files** — `.md` files over 200 lines, listed with path and line count
+2. **Duplicate candidates** — pairs of files sharing ≥ 2 significant description terms (terms ≥ 3 chars, excluding stopwords), listed with the shared terms
+3. **Deletion candidates** — files where all description terms appear in at least one other file (i.e., would pass `memory_delete` guardrail), listed with which file covers them
+
+#### Scenario: Report shows oversized files
+- **WHEN** `orga memory defrag` is called and a file exceeds 200 lines
+- **THEN** that file appears in the oversized section with its line count
+
+#### Scenario: Report shows duplicate candidates
+- **WHEN** two files share ≥ 2 significant description terms
+- **THEN** they appear as a pair in the duplicate candidates section with the shared terms listed
+
+#### Scenario: Report shows deletion candidates
+- **WHEN** a file's description terms all appear in at least one other file
+- **THEN** it appears in the deletion candidates section with the covering file named
+
+#### Scenario: Clean repository produces empty report
+- **WHEN** `orga memory defrag` is called and the repository has no oversized, duplicate, or deletable files
+- **THEN** the command exits with code 0 and prints nothing (or empty arrays with `--json`)
+
+#### Scenario: JSON output
+- **WHEN** `orga memory defrag --json` is called
+- **THEN** output is a valid JSON object with keys `oversized`, `duplicates`, `deletion_candidates`
+
+### Requirement: memory delete subcommand
+The CLI SHALL provide `orga memory delete <path>` to delete a topic file from the context repository, applying the same uniqueness guardrail as `ContextRepository::delete()`. With `--json`, success output SHALL be `{"ok": true, "path": "..."}`.
+
+#### Scenario: memory delete in command reference
+- **WHEN** `orga memory delete <path>` is called on a file whose description terms are covered elsewhere
+- **THEN** the file is deleted and committed
+
+#### Scenario: memory delete blocked
+- **WHEN** `orga memory delete <path>` is called on a file whose description terms appear nowhere else
+- **THEN** the command exits with a non-zero code and prints the guardrail error

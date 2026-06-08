@@ -5,16 +5,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::board::Board;
 use crate::logging::Logger;
-use crate::memory::{CompactionStore, MemoryStore, TodoStore};
+use crate::memory::{CompactionStore, ContextRepository, TodoStore};
 use crate::workspace::WorkspaceStore;
 
 pub struct ToolContext {
     pub ticket_id: String,
     pub agent_scope: String,
     pub board: Box<dyn Board>,
-    pub memory_store: MemoryStore,
     pub compaction_store: CompactionStore,
     pub todo_store: TodoStore,
+    pub context_repo: ContextRepository,
     pub dry_run: bool,
     pub logger: Arc<Logger>,
     pub workspace: Option<WorkspaceStore>,
@@ -38,13 +38,16 @@ pub async fn dispatch(tool_name: &str, args: &str, ctx: &ToolContext) -> String 
     match tool_name {
         "comment" => dispatch_comment(args, ctx).await,
         "create_sub" => dispatch_create_sub(args, ctx).await,
-        "set_memory" => dispatch_set_memory(args, ctx).await,
         "compact" => dispatch_compact(args, ctx).await,
         "done" => dispatch_done(args, ctx).await,
         "skip" => "skip".to_string(),
         "return" => dispatch_return(args).await,
         "bash" => dispatch_bash(args, ctx).await,
         "todos" => dispatch_todos(args, ctx).await,
+        "memory_list" => dispatch_memory_list(ctx).await,
+        "memory_read" => dispatch_memory_read(args, ctx).await,
+        "memory_write" => dispatch_memory_write(args, ctx).await,
+        "memory_search" => dispatch_memory_search(args, ctx).await,
         other => format!("error: unknown tool '{other}'"),
     }
 }
@@ -101,24 +104,80 @@ async fn dispatch_create_sub(args: &str, ctx: &ToolContext) -> String {
 }
 
 #[derive(Deserialize)]
-struct SetMemoryArgs {
-    context: String,
+struct MemoryReadArgs {
+    path: String,
 }
 
-async fn dispatch_set_memory(args: &str, ctx: &ToolContext) -> String {
-    let parsed: SetMemoryArgs = match serde_json::from_str(args) {
-        Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
-    };
-    log_action!(ctx, ctx.dry_run, format!("set memory for {}", ctx.ticket_id));
-    if ctx.dry_run {
-        return dry_run_msg(&format!("set memory for {}", ctx.ticket_id));
-    }
-    match ctx.memory_store.set(&ctx.ticket_id, &parsed.context) {
-        Ok(()) => "memory saved".to_string(),
+async fn dispatch_memory_list(ctx: &ToolContext) -> String {
+    match ctx.context_repo.list() {
+        Ok(entries) if entries.is_empty() => "(empty repository — no memory files yet)".to_string(),
+        Ok(entries) => entries
+            .iter()
+            .map(|e| if e.description.is_empty() {
+                e.path.clone()
+            } else {
+                format!("{} — {}", e.path, e.description)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
         Err(e) => format!("error: {e}"),
     }
 }
+
+async fn dispatch_memory_read(args: &str, ctx: &ToolContext) -> String {
+    let parsed: MemoryReadArgs = match serde_json::from_str(args) {
+        Ok(a) => a,
+        Err(e) => return format!("error: invalid args: {e}"),
+    };
+    match ctx.context_repo.read(&parsed.path) {
+        Ok(content) => content,
+        Err(e) => format!("error: {e}"),
+    }
+}
+
+#[derive(Deserialize)]
+struct MemoryWriteArgs {
+    path: String,
+    content: String,
+    commit_msg: String,
+}
+
+async fn dispatch_memory_write(args: &str, ctx: &ToolContext) -> String {
+    let parsed: MemoryWriteArgs = match serde_json::from_str(args) {
+        Ok(a) => a,
+        Err(e) => return format!("error: invalid args: {e}"),
+    };
+    log_action!(ctx, ctx.dry_run, format!("memory_write {}", parsed.path));
+    if ctx.dry_run {
+        return dry_run_msg(&format!("memory_write {}", parsed.path));
+    }
+    match ctx.context_repo.write(&parsed.path, &parsed.content, &parsed.commit_msg) {
+        Ok(()) => format!("written: {}", parsed.path),
+        Err(e) => format!("error: {e}"),
+    }
+}
+
+#[derive(Deserialize)]
+struct MemorySearchArgs {
+    query: String,
+}
+
+async fn dispatch_memory_search(args: &str, ctx: &ToolContext) -> String {
+    let parsed: MemorySearchArgs = match serde_json::from_str(args) {
+        Ok(a) => a,
+        Err(e) => return format!("error: invalid args: {e}"),
+    };
+    match ctx.context_repo.search(&parsed.query) {
+        Ok(results) if results.is_empty() => "(no matches)".to_string(),
+        Ok(results) => results
+            .iter()
+            .map(|(path, line_no, line)| format!("{}:{}: {}", path, line_no, line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Err(e) => format!("error: {e}"),
+    }
+}
+
 
 #[derive(Deserialize)]
 struct CompactArgs {
@@ -296,17 +355,6 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "set_memory".to_string(),
-            description: "Save working context for this ticket (private to this agent, persists across cycles).".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "context": { "type": "string", "description": "Context text to store" }
-                },
-                "required": ["context"]
-            }),
-        },
-        ToolDefinition {
             name: "compact".to_string(),
             description: "Store a compaction summary for this ticket's comments to reduce future context size.".to_string(),
             parameters: serde_json::json!({
@@ -394,6 +442,50 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["todos"]
             }),
         },
+        ToolDefinition {
+            name: "memory_list".to_string(),
+            description: "List all files in the context repository with their descriptions. Use this to discover what cross-ticket knowledge exists.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
+        ToolDefinition {
+            name: "memory_read".to_string(),
+            description: "Read the full content of a context repository file by its path.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path to the file (e.g. 'themes/auth.md')" }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDefinition {
+            name: "memory_write".to_string(),
+            description: "Write (create or overwrite) a topic file in the context repository. Include YAML frontmatter with a `description` field. This commits the change to the git repository.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path to write (e.g. 'themes/auth.md')" },
+                    "content": { "type": "string", "description": "Full file content including frontmatter" },
+                    "commit_msg": { "type": "string", "description": "Informative commit message describing what was learned" }
+                },
+                "required": ["path", "content", "commit_msg"]
+            }),
+        },
+        ToolDefinition {
+            name: "memory_search".to_string(),
+            description: "Search across all context repository files for a keyword or phrase (case-insensitive). Returns matching lines with file path and line number.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query (case-insensitive literal match)" }
+                },
+                "required": ["query"]
+            }),
+        },
     ]
 }
 
@@ -433,6 +525,84 @@ async fn dispatch_bash(args: &str, ctx: &ToolContext) -> String {
         Ok(Err(e)) => format!("error: failed to spawn process: {e}"),
         Err(_) => serde_json::json!({ "stdout": "", "stderr": "timeout: command exceeded 120s", "exit_code": -1 }).to_string(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sleep-time tool context — minimal context for reflection/defrag agents
+// ---------------------------------------------------------------------------
+
+pub struct SleepToolContext {
+    pub context_repo: ContextRepository,
+    pub logger: Arc<Logger>,
+}
+
+pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolContext) -> String {
+    match tool_name {
+        "memory_list" => {
+            match ctx.context_repo.list() {
+                Ok(entries) if entries.is_empty() => "(empty repository)".to_string(),
+                Ok(entries) => entries
+                    .iter()
+                    .map(|e| if e.description.is_empty() { e.path.clone() } else { format!("{} — {}", e.path, e.description) })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                Err(e) => format!("error: {e}"),
+            }
+        }
+        "memory_read" => {
+            let parsed: MemoryReadArgs = match serde_json::from_str(args) {
+                Ok(a) => a,
+                Err(e) => return format!("error: invalid args: {e}"),
+            };
+            match ctx.context_repo.read(&parsed.path) {
+                Ok(content) => content,
+                Err(e) => format!("error: {e}"),
+            }
+        }
+        "memory_write" => {
+            let parsed: MemoryWriteArgs = match serde_json::from_str(args) {
+                Ok(a) => a,
+                Err(e) => return format!("error: invalid args: {e}"),
+            };
+            ctx.logger.info(&format!("[sleep-tool] memory_write {}", parsed.path));
+            match ctx.context_repo.write(&parsed.path, &parsed.content, &parsed.commit_msg) {
+                Ok(()) => format!("written: {}", parsed.path),
+                Err(e) => format!("error: {e}"),
+            }
+        }
+        "memory_delete" => {
+            let parsed: MemoryReadArgs = match serde_json::from_str(args) {
+                Ok(a) => a,
+                Err(e) => return format!("error: invalid args: {e}"),
+            };
+            ctx.logger.info(&format!("[sleep-tool] memory_delete {}", parsed.path));
+            match ctx.context_repo.delete(&parsed.path) {
+                Ok(()) => format!("deleted: {}", parsed.path),
+                Err(e) => format!("error: {e}"),
+            }
+        }
+        other => format!("error: unknown sleep tool '{other}'"),
+    }
+}
+
+pub fn defrag_tool_definitions() -> Vec<ToolDefinition> {
+    let mut defs = tool_definitions_for(&[
+        "memory_list".to_string(),
+        "memory_read".to_string(),
+        "memory_write".to_string(),
+    ]);
+    defs.push(ToolDefinition {
+        name: "memory_delete".to_string(),
+        description: "Delete a file from the context repository. Blocked if the file's description terms are not covered by any other file.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Relative path of the file to delete (e.g. 'themes/old-notes.md')" }
+            },
+            "required": ["path"]
+        }),
+    });
+    defs
 }
 
 #[cfg(test)]
@@ -477,18 +647,22 @@ mod tests {
 
     fn make_ctx(dry_run: bool) -> ToolContext {
         let dir = tempdir().unwrap();
-        let db_path = dir.keep().join("mem.db");
-        ToolContext {
+        let db_path = dir.path().join("mem.db");
+        let repo_path = dir.path().join("memory");
+        let ctx = ToolContext {
             ticket_id: "T-1".to_string(),
             agent_scope: "main".to_string(),
             board: Box::new(MockBoard::new()),
-            memory_store: MemoryStore::open(&db_path).unwrap(),
             compaction_store: CompactionStore::open(&db_path).unwrap(),
             todo_store: crate::memory::TodoStore::open(&db_path).unwrap(),
+            context_repo: crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap(),
             dry_run,
             logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
             workspace: None,
-        }
+        };
+        // keep dir alive by leaking it for the test duration
+        std::mem::forget(dir);
+        ctx
     }
 
     #[tokio::test]
@@ -503,13 +677,6 @@ mod tests {
         let ctx = make_ctx(false);
         let result = dispatch("comment", r#"{"text":"hello"}"#, &ctx).await;
         assert_eq!(result, "comment posted");
-    }
-
-    #[tokio::test]
-    async fn dispatch_set_memory_dry_run() {
-        let ctx = make_ctx(true);
-        let result = dispatch("set_memory", r#"{"context":"working on it"}"#, &ctx).await;
-        assert!(result.contains("[dry-run]"));
     }
 
     #[tokio::test]
@@ -567,14 +734,15 @@ mod tests {
     fn make_ctx_with_workspace(dry_run: bool) -> (ToolContext, tempfile::TempDir) {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("mem.db");
+        let repo_path = dir.path().join("memory");
         let ws = crate::workspace::WorkspaceStore::new(dir.path().to_path_buf());
         let ctx = ToolContext {
             ticket_id: "T-1".to_string(),
             agent_scope: "main".to_string(),
             board: Box::new(MockBoard::new()),
-            memory_store: MemoryStore::open(&db_path).unwrap(),
             compaction_store: CompactionStore::open(&db_path).unwrap(),
             todo_store: crate::memory::TodoStore::open(&db_path).unwrap(),
+            context_repo: crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap(),
             dry_run,
             logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
             workspace: Some(ws),
@@ -656,19 +824,74 @@ mod tests {
     #[tokio::test]
     async fn dispatch_todos_scope_key_sanitization() {
         let dir = tempdir().unwrap();
-        let db_path = dir.keep().join("mem.db");
+        let db_path = dir.path().join("mem.db");
+        let repo_path = dir.path().join("memory");
         let ctx = ToolContext {
             ticket_id: "T-1".to_string(),
             agent_scope: "my-sub agent!".to_string(),
             board: Box::new(MockBoard::new()),
-            memory_store: MemoryStore::open(&db_path).unwrap(),
             compaction_store: CompactionStore::open(&db_path).unwrap(),
             todo_store: crate::memory::TodoStore::open(&db_path).unwrap(),
+            context_repo: crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap(),
             dry_run: false,
             logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
             workspace: None,
         };
         let result = dispatch("todos", r#"{"todos":[{"content":"Task","status":"pending","active_form":""}]}"#, &ctx).await;
         assert!(result.contains("Todo list updated successfully"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_sleep_memory_delete_succeeds_when_covered() {
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path().join("memory");
+        let repo = crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap();
+        repo.write(
+            "themes/auth.md",
+            "---\ndescription: Auth JWT patterns\n---\n\nAuth JWT patterns covered here.",
+            "add auth",
+        ).unwrap();
+        repo.write(
+            "themes/notes.md",
+            "---\ndescription: Auth notes\n---\n\nNotes.",
+            "add notes",
+        ).unwrap();
+        let ctx = SleepToolContext {
+            context_repo: crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap(),
+            logger: Arc::new(crate::logging::Logger::new(&std::path::PathBuf::from("/dev/null"), false)),
+        };
+        let result = dispatch_sleep_tool("memory_delete", r#"{"path":"themes/notes.md"}"#, &ctx).await;
+        assert_eq!(result, "deleted: themes/notes.md");
+    }
+
+    #[tokio::test]
+    async fn dispatch_sleep_memory_delete_blocked_when_unique() {
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path().join("memory");
+        let repo = crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap();
+        repo.write(
+            "themes/obscure.md",
+            "---\ndescription: Webhook retry backoff\n---\n\nContent.",
+            "add obscure",
+        ).unwrap();
+        let ctx = SleepToolContext {
+            context_repo: crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap(),
+            logger: Arc::new(crate::logging::Logger::new(&std::path::PathBuf::from("/dev/null"), false)),
+        };
+        let result = dispatch_sleep_tool("memory_delete", r#"{"path":"themes/obscure.md"}"#, &ctx).await;
+        assert!(result.starts_with("error:"));
+        assert!(result.contains("cannot delete"));
+    }
+
+    #[test]
+    fn memory_delete_not_in_all_tool_definitions() {
+        let defs = all_tool_definitions();
+        assert!(!defs.iter().any(|d| d.name == "memory_delete"));
+    }
+
+    #[test]
+    fn memory_delete_in_defrag_tool_definitions() {
+        let defs = defrag_tool_definitions();
+        assert!(defs.iter().any(|d| d.name == "memory_delete"));
     }
 }

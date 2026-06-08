@@ -473,7 +473,7 @@ pub fn run_agent_init(config_path: &Path) -> Result<(), OrgaError> {
     config.memory = if memory_path.is_empty() {
         config.memory
     } else {
-        Some(MemoryConfig { path: Some(memory_path) })
+        Some(MemoryConfig { path: Some(memory_path), defrag_file_threshold: None, defrag_size_threshold_kb: None })
     };
 
     config.workspace = if workspace_path.is_empty() {

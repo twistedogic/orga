@@ -1,6 +1,6 @@
 use chrono::Local;
 use crate::config::{AppConfig, LlmConfig, SubagentConfig};
-use crate::memory::MemoryStore;
+use crate::memory::ContextRepository;
 use crate::models::Ticket;
 
 pub struct SkillContext {
@@ -15,15 +15,15 @@ pub struct TicketContext {
 
 pub fn build_context(
     ticket: &Ticket,
-    memory_store: &MemoryStore,
+    context_repo: &ContextRepository,
     llm_cfg: &LlmConfig,
     app_cfg: &AppConfig,
     skill_ctx: Option<&SkillContext>,
     subagents: &[(String, String)],
     agents_md: Option<&str>,
 ) -> TicketContext {
-    let system = build_system_prompt(ticket, app_cfg, skill_ctx, subagents, agents_md);
-    let user = build_user_message(ticket, memory_store, llm_cfg);
+    let system = build_system_prompt(ticket, context_repo, app_cfg, skill_ctx, subagents, agents_md);
+    let user = build_user_message(ticket, llm_cfg);
     TicketContext { system, user }
 }
 
@@ -31,17 +31,17 @@ pub fn build_subagent_context(
     subagent_cfg: &SubagentConfig,
     ticket: &Ticket,
     task: &str,
-    memory_store: &MemoryStore,
+    context_repo: &ContextRepository,
     llm_cfg: &LlmConfig,
     skill_ctx: Option<&SkillContext>,
 ) -> TicketContext {
-    let system = build_subagent_system_prompt(subagent_cfg, skill_ctx);
-    let mut user = build_user_message(ticket, memory_store, llm_cfg);
+    let system = build_subagent_system_prompt(subagent_cfg, context_repo, skill_ctx);
+    let mut user = build_user_message(ticket, llm_cfg);
     user.push_str(&format!("\n\n## Your Task\n{task}"));
     TicketContext { system, user }
 }
 
-fn build_subagent_system_prompt(subagent_cfg: &SubagentConfig, skill_ctx: Option<&SkillContext>) -> String {
+fn build_subagent_system_prompt(subagent_cfg: &SubagentConfig, context_repo: &ContextRepository, skill_ctx: Option<&SkillContext>) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     if let Some(ref prompt) = subagent_cfg.system_prompt {
@@ -59,6 +59,8 @@ Do NOT call `comment`, `done`, or `skip` unless they are in your available tools
         subagent_cfg.name, subagent_cfg.description, tools_list
     ));
 
+    parts.push(build_context_repo_section(context_repo));
+
     if let Some(ctx) = skill_ctx
         && !ctx.active.is_empty()
     {
@@ -72,7 +74,7 @@ Do NOT call `comment`, `done`, or `skip` unless they are in your available tools
     parts.join("\n")
 }
 
-fn build_system_prompt(_ticket: &Ticket, app_cfg: &AppConfig, skill_ctx: Option<&SkillContext>, subagents: &[(String, String)], agents_md: Option<&str>) -> String {
+fn build_system_prompt(_ticket: &Ticket, context_repo: &ContextRepository, app_cfg: &AppConfig, skill_ctx: Option<&SkillContext>, subagents: &[(String, String)], agents_md: Option<&str>) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     if subagents.is_empty() {
@@ -81,7 +83,7 @@ fn build_system_prompt(_ticket: &Ticket, app_cfg: &AppConfig, skill_ctx: Option<
 You communicate with teammates exclusively through ticket comments, \
 checklists, and board actions. You are a first-class board member alongside humans.\n\
 \n\
-Available tools: comment, create_sub, set_memory, compact, bash, done, skip.\n\
+Available tools: comment, create_sub, compact, bash, done, skip, memory_list, memory_read, memory_write, memory_search.\n\
 \n\
 Use `done(comment?)` when you have completed work on a ticket — this returns it to the creator.\n\
 Use `skip()` if the ticket is not actionable right now.",
@@ -93,7 +95,7 @@ Use `skip()` if the ticket is not actionable right now.",
 You are a dispatcher: you coordinate work by delegating to specialized subagents and \
 communicating results to teammates via ticket comments.\n\
 \n\
-Available tools: comment, dispatch, skip, done.\n\
+Available tools: comment, dispatch, skip, done, memory_list, memory_read, memory_write, memory_search.\n\
 \n\
 Use `dispatch(subagent, task)` to delegate work to a subagent. The subagent will return a result.\n\
 Use `comment(text)` to communicate with teammates or ask for clarification.\n\
@@ -131,12 +133,40 @@ Use `skip()` if the ticket is not actionable right now.",
             parts.push(section);
         }
 
+    parts.push(build_context_repo_section(context_repo));
+
     parts.join("\n")
+}
+
+fn build_context_repo_section(context_repo: &ContextRepository) -> String {
+    let mut section = String::from("\n## Context Repository");
+
+    let entries = context_repo.list().unwrap_or_default();
+    if entries.is_empty() {
+        section.push_str("\n*(empty — no memory files yet)*");
+    } else {
+        for entry in &entries {
+            if entry.description.is_empty() {
+                section.push_str(&format!("\n- {}", entry.path));
+            } else {
+                section.push_str(&format!("\n- {} — {}", entry.path, entry.description));
+            }
+        }
+    }
+
+    let system_files = context_repo.system_files().unwrap_or_default();
+    if !system_files.is_empty() {
+        section.push_str("\n\n## Context Repository (pinned)");
+        for (path, content) in &system_files {
+            section.push_str(&format!("\n\n### {path}\n{content}"));
+        }
+    }
+
+    section
 }
 
 fn build_user_message(
     ticket: &Ticket,
-    memory_store: &MemoryStore,
     _llm_cfg: &LlmConfig,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -189,10 +219,6 @@ fn build_user_message(
                 c.content
             ));
         }
-    }
-
-    if let Ok(Some(mem)) = memory_store.get(&ticket.summary.id) {
-        parts.push(format!("\n## Agent Memory (private)\n{}", mem.context));
     }
 
     parts.join("\n")
@@ -255,16 +281,16 @@ mod tests {
         }
     }
 
-    fn open_memory(dir: &std::path::Path) -> MemoryStore {
-        MemoryStore::open(&dir.join("mem.db")).unwrap()
+    fn open_repo(dir: &std::path::Path) -> ContextRepository {
+        ContextRepository::open(&dir.join("memory"), "bot-1").unwrap()
     }
 
     #[test]
     fn context_includes_ticket_title() {
         let ticket = make_ticket("Fix the bug");
         let dir = tempdir().unwrap();
-        let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        let repo = open_repo(dir.path());
+        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
         assert!(ctx.user.contains("Test Ticket"));
         assert!(ctx.user.contains("Fix the bug"));
     }
@@ -273,28 +299,28 @@ mod tests {
     fn context_system_includes_agent_name() {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
-        let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        let repo = open_repo(dir.path());
+        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
         assert!(ctx.system.contains("bot-1"));
     }
 
     #[test]
-    fn context_includes_memory_when_present() {
+    fn context_system_includes_repo_section() {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
-        let mem = open_memory(dir.path());
-        mem.set("T-1", "remember this context").unwrap();
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
-        assert!(ctx.user.contains("remember this context"));
+        let repo = open_repo(dir.path());
+        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        assert!(ctx.system.contains("## Context Repository"));
     }
 
     #[test]
-    fn context_omits_memory_section_when_absent() {
+    fn context_system_injects_system_files() {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
-        let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
-        assert!(!ctx.user.contains("Agent Memory"));
+        let repo = open_repo(dir.path());
+        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        assert!(ctx.system.contains("## Context Repository (pinned)"));
+        assert!(ctx.system.contains("system/overview.md"));
     }
 
     #[test]
@@ -306,8 +332,8 @@ mod tests {
             compacted_count: 10,
         });
         let dir = tempdir().unwrap();
-        let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        let repo = open_repo(dir.path());
+        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
         assert!(ctx.user.contains("first 10 comments: auth work"));
     }
 
@@ -315,7 +341,7 @@ mod tests {
     fn system_prompt_includes_available_skills() {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
-        let mem = open_memory(dir.path());
+        let repo = open_repo(dir.path());
         let skill_ctx = SkillContext {
             available: vec![
                 ("code-review".to_string(), "Reviews code.".to_string()),
@@ -323,7 +349,7 @@ mod tests {
             ],
             active: vec![],
         };
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
+        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
         assert!(ctx.system.contains("## Available Skills"));
         assert!(ctx.system.contains("**code-review**"));
         assert!(ctx.system.contains("**security**"));
@@ -333,12 +359,12 @@ mod tests {
     fn system_prompt_includes_active_skills_body() {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
-        let mem = open_memory(dir.path());
+        let repo = open_repo(dir.path());
         let skill_ctx = SkillContext {
             available: vec![("code-review".to_string(), "Reviews code.".to_string())],
             active: vec![("code-review".to_string(), "Follow these steps to review code.".to_string())],
         };
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
+        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
         assert!(ctx.system.contains("## Active Skills"));
         assert!(ctx.system.contains("### code-review"));
         assert!(ctx.system.contains("Follow these steps to review code."));
@@ -348,8 +374,8 @@ mod tests {
     fn system_prompt_no_skills_sections_when_no_context() {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
-        let mem = open_memory(dir.path());
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        let repo = open_repo(dir.path());
+        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
         assert!(!ctx.system.contains("## Available Skills"));
         assert!(!ctx.system.contains("## Active Skills"));
     }
@@ -358,12 +384,12 @@ mod tests {
     fn system_prompt_no_active_section_when_none_matched() {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
-        let mem = open_memory(dir.path());
+        let repo = open_repo(dir.path());
         let skill_ctx = SkillContext {
             available: vec![("s".to_string(), "desc".to_string())],
             active: vec![],
         };
-        let ctx = build_context(&ticket, &mem, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
+        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
         assert!(ctx.system.contains("## Available Skills"));
         assert!(!ctx.system.contains("## Active Skills"));
     }

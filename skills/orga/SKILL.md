@@ -69,23 +69,34 @@ orga ticket show --json <sub_ticket_id>   # load a specific sub-ticket
 
 ## Working a ticket
 
-### Load memory first
+### Scan the context repository
+
+Before starting work, scan the context repository to see what cross-ticket knowledge already exists:
 
 ```bash
-orga memory get <id>
+orga memory list --json     # see all topic files with descriptions
 ```
 
-This may contain prior research, findings, or context from previous sessions. Always read it before starting work.
-
-### Save findings
-
-After investigating, save anything useful for future sessions:
+Read any files that seem relevant to this ticket:
 
 ```bash
-orga memory set <id> "<context, research results, key findings>"
+orga memory read themes/auth.md          # read a specific topic file
+orga memory search "<keyword>"           # search across all files
 ```
 
-Memory overwrites on each `set` — include all relevant context, not just new findings.
+The repository is organized by topic (themes, patterns, people, architecture). Files under `system/` are always loaded into the agent's context automatically.
+
+### Write cross-ticket learnings
+
+After investigating, if you discovered something valuable for future tickets (a recurring pattern, architectural insight, team convention), write it to the appropriate topic file:
+
+```bash
+orga memory write themes/auth.md "---\ndescription: Auth patterns and recurring issues\n---\n\n## JWT Refresh\n..."
+```
+
+Only write to memory if the finding is **cross-ticket valuable** — not ticket-specific facts. The sleep-time agent also writes to memory automatically after `done()`, so you don't need to capture everything manually.
+
+**`system/` convention**: Files in `system/` (e.g. `system/overview.md`) are always injected into context. Keep them current with board-level project overview and team conventions. Other files are loaded on demand.
 
 ### Communicate via comments
 
@@ -148,8 +159,11 @@ orga ticket comment <id> "<text>"
 orga ticket return <id> [--comment "<text>"]
 orga ticket assign <id> <username>
 orga ticket create-sub <parent_id> "<title>" [--description "<text>"] [--list "<column name>"]
-orga memory get <ticket_id>
-orga memory set <ticket_id> "<context>"
+orga memory list [--json]                        # list all topic files
+orga memory read <path> [--json]                 # read a topic file
+orga memory write <path> <content> [--message <commit-msg>]  # write a topic file
+orga memory search <query> [--json]              # search across all files
+orga memory defrag                               # manual defragmentation pass
 orga columns --json
 orga artifact commit <ticket_id> <name> [content] [--file <path>]
 orga artifact list  <ticket_id>
@@ -174,7 +188,9 @@ token = "..."
 member_id = "..."
 
 [memory]          # optional
-path = "/path/to/memory.db"   # default: ~/.orga/memory.db
+path = "/path/to/memory"          # default: ~/.orga/memory (git repo directory)
+defrag_file_threshold = 20        # trigger defrag at this many files (default: 20)
+defrag_size_threshold_kb = 50     # trigger defrag at this total size KB (default: 50)
 
 [artifact]        # optional — required for orga artifact commands
 backend = "git"
