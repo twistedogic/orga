@@ -258,16 +258,6 @@ async fn dispatch_todos(args: &str, ctx: &ToolContext) -> String {
     }
 
     let scope = todos_scope_key(&ctx.agent_scope);
-    let old_items: Vec<StoredTodoItem> = ctx.todo_store
-        .get(&ctx.ticket_id, &scope)
-        .unwrap_or(None)
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_default();
-
-    let old_status: std::collections::HashMap<String, String> = old_items
-        .iter()
-        .map(|t| (t.content.clone(), t.status.clone()))
-        .collect();
 
     let new_items: Vec<StoredTodoItem> = parsed.todos.iter().map(|t| StoredTodoItem {
         content: t.content.clone(),
@@ -282,13 +272,8 @@ async fn dispatch_todos(args: &str, ctx: &ToolContext) -> String {
     for item in &new_items {
         match item.status.as_str() {
             "pending" => pending += 1,
-            "in_progress" => {
-                in_progress += 1;
-                let _ = old_status.get(&item.content);
-            }
-            "completed" => {
-                completed += 1;
-            }
+            "in_progress" => in_progress += 1,
+            "completed" => completed += 1,
             _ => {}
         }
     }
@@ -322,10 +307,6 @@ async fn dispatch_return(args: &str) -> String {
         Ok(parsed) => parsed.result,
         Err(e) => format!("error: invalid args: {e}"),
     }
-}
-
-pub fn tool_definitions() -> Vec<ToolDefinition> {
-    all_tool_definitions()
 }
 
 pub fn all_tool_definitions() -> Vec<ToolDefinition> {

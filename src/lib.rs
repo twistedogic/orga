@@ -6,5 +6,6 @@ pub mod init;
 pub mod logging;
 pub mod memory;
 pub mod models;
+pub mod output;
 pub mod systemd;
 pub mod workspace;

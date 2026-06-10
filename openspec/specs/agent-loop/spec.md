@@ -46,7 +46,7 @@ The user message SHALL include the following ticket metadata fields, in order: t
 - **THEN** the message SHALL still include title, ID, column, URL, creator, and assignees as before
 
 ### Requirement: Per-ticket LLM tool-call cycle
-For each selected ticket, the loop SHALL build a context (system prompt + ticket content) and run a bounded tool-call cycle with the LLM. The system prompt SHALL include an "## Available Skills" section listing all discovered skills when a skills folder is configured, and an "## Active Skills" section with full skill bodies for any skills that match the ticket. The cycle SHALL stop when the LLM calls `done()`, `skip()`, returns with no tool calls, or the `max_actions_per_ticket` cap is reached. When subagents are configured, the main agent cycle SHALL use a narrowed tool set (`comment`, `dispatch`, `skip`, `done`, `set_memory`, `compact`, `todos`) and the system prompt SHALL include the names and descriptions of all configured subagents. When no subagents are configured, the existing flat loop behavior SHALL apply unchanged, with `todos` added to the tool set. `ToolContext` SHALL carry an `agent_scope` field identifying the current agent: `"main"` for the main agent, and the subagent name for subagents.
+For each selected ticket, the loop SHALL build a context (system prompt + ticket content) and run a bounded tool-call cycle using `run_llm_loop`. The board client SHALL be built once before the loop begins and reused across all iterations. The `ContextRepository` SHALL be opened once per ticket and passed into `ToolContext`. The system prompt SHALL include an "## Available Skills" section listing all discovered skills when a skills folder is configured, and an "## Active Skills" section with full skill bodies for any skills that match the ticket. The cycle SHALL stop when the LLM calls `done()`, `skip()`, returns with no tool calls, or the `max_actions_per_ticket` cap is reached. When subagents are configured, the main agent cycle SHALL use a narrowed tool set (`comment`, `dispatch`, `skip`, `done`, `set_memory`, `compact`, `todos`) and the system prompt SHALL include the names and descriptions of all configured subagents. When no subagents are configured, the existing flat loop behavior SHALL apply unchanged, with `todos` added to the tool set. `ToolContext` SHALL carry an `agent_scope` field identifying the current agent: `"main"` for the main agent, and the subagent name for subagents.
 
 #### Scenario: ToolContext carries agent scope for main agent
 - **WHEN** the main agent loop constructs `ToolContext`
@@ -83,6 +83,14 @@ For each selected ticket, the loop SHALL build a context (system prompt + ticket
 #### Scenario: Skills injected into system prompt at cycle start
 - **WHEN** the LLM cycle starts for a ticket
 - **THEN** the system prompt includes available skills listing and any matched active skills before the first LLM call
+
+#### Scenario: Board built once per ticket cycle
+- **WHEN** the main agent processes a ticket
+- **THEN** `build_board` is called once before the tool-call loop, not once per iteration
+
+#### Scenario: ContextRepository opened once per ticket cycle
+- **WHEN** the main agent processes a ticket
+- **THEN** `ContextRepository::open` is called once before the tool-call loop
 
 ### Requirement: Sequential ticket processing
 The loop SHALL process tickets one at a time in the order returned by `list_assigned`. Parallel processing SHALL NOT occur in v1.

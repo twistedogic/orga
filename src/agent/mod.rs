@@ -1,5 +1,7 @@
+pub mod agents;
 pub mod config;
 pub mod context;
+pub mod loop_runner;
 pub mod skills;
 pub mod tools;
 
@@ -7,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rig_core::client::CompletionClient;
-use rig_core::completion::{AssistantContent, CompletionModel, CompletionRequest, Message};
+use rig_core::completion::{CompletionModel, Message};
 
 use crate::board::build_board;
 use crate::config::AppConfig;
@@ -19,7 +21,7 @@ use crate::workspace::WorkspaceStore;
 use config::{LlmClient, build_llm_client};
 use context::{SkillContext, build_context};
 use skills::{SkillMeta, match_skills, scan_skills};
-use tools::{ToolContext, dispatch, is_terminal_tool, tool_definitions, tool_definitions_for};
+use tools::{ToolContext, dispatch, is_terminal_tool, all_tool_definitions, tool_definitions_for};
 
 pub async fn run_agent(once: bool, dry_run: bool, config: &AppConfig, logger: Arc<Logger>) -> Result<(), OrgaError> {
     let llm_cfg = config.llm_config()?;
@@ -168,7 +170,7 @@ where
 
     // Choose tool set based on whether subagents are configured
     let tools = if config.subagents.is_empty() {
-        tool_definitions()
+        all_tool_definitions()
     } else {
         let main_agent_tools = vec![
             "comment".to_string(),
@@ -192,135 +194,130 @@ where
         println!("[dry-run] processing ticket {ticket_id}");
     }
 
-    let mut action_count = 0usize;
+    // Build board, compaction store, todo store, and tool context once before
+    // the loop — these are re-used across every iteration.
+    let tool_board = build_board(config, Arc::clone(&logger)).await?;
+    let tool_compaction = CompactionStore::open(&db_path)?;
+    let tool_todos = TodoStore::open(&db_path)?;
+    let tool_ctx = ToolContext {
+        ticket_id: ticket_id.to_string(),
+        agent_scope: "main".to_string(),
+        board: tool_board,
+        compaction_store: tool_compaction,
+        todo_store: tool_todos,
+        context_repo: context_repo.clone(),
+        dry_run,
+        logger: Arc::clone(&logger),
+        workspace: config.workspace_base_path().map(WorkspaceStore::new),
+    };
+    let tool_ctx = Arc::new(tool_ctx);
+
     let mut history: Vec<Message> = vec![
         Message::system(ctx_msg.system.clone()),
         Message::user(ctx_msg.user.clone()),
     ];
 
-    loop {
-        if action_count >= max_actions {
-            logger.info(&format!("[agent] ticket {ticket_id}: max actions cap ({max_actions}) reached"));
-            break;
-        }
-
-        let req = CompletionRequest {
-            model: None,
-            preamble: None,
-            chat_history: rig_core::one_or_many::OneOrMany::many(history.clone())
-                .expect("history is non-empty"),
-            documents: vec![],
-            tools: tools.clone(),
-            temperature: None,
-            max_tokens: None,
-            tool_choice: None,
-            additional_params: None,
-            output_schema: None,
-        };
-
-        let response = model.completion(req).await.map_err(|e| {
-            OrgaError::BackendError(format!("LLM completion error for {ticket_id}: {e}"))
-        })?;
-
-        let choices: Vec<AssistantContent> = response.choice.into_iter().collect();
-
-        let tool_calls: Vec<_> = choices
-            .iter()
-            .filter_map(|c| if let AssistantContent::ToolCall(tc) = c { Some(tc.clone()) } else { None })
-            .collect();
-
-        if let Ok(content) = rig_core::one_or_many::OneOrMany::many(choices) {
-            history.push(Message::Assistant { id: None, content });
-        }
-
-        if tool_calls.is_empty() {
-            logger.info(&format!("[agent] ticket {ticket_id}: LLM returned no tool calls, ending cycle"));
-            break;
-        }
-
-        let tool_board = build_board(config, Arc::clone(&logger)).await?;
-        let tool_compaction = CompactionStore::open(&db_path)?;
-        let tool_todos = TodoStore::open(&db_path)?;
-
-    let tool_ctx = ToolContext {
-            ticket_id: ticket_id.to_string(),
-            agent_scope: "main".to_string(),
-            board: tool_board,
-            compaction_store: tool_compaction,
-            todo_store: tool_todos,
-            context_repo: ContextRepository::open(&config.memory_repo_path(), &config.agent.name)
-                .map_err(|e| OrgaError::BackendError(format!("context repo error: {e}")))?,
-            dry_run,
-            logger: Arc::clone(&logger),
-            workspace: config.workspace_base_path().map(WorkspaceStore::new),
-        };
-
-        let mut terminal = false;
-        for tc in &tool_calls {
-            let name = &tc.function.name;
-            let args = tc.function.arguments.to_string();
-
-            logger.info(&format!("[agent] ticket {ticket_id}: calling tool '{name}' args={args}"));
-            if dry_run {
-                println!("[dry-run] would call tool '{name}' with args: {args}");
+    let dispatch_logger = Arc::clone(&logger);
+    let dispatch_tool_ctx = Arc::clone(&tool_ctx);
+    let dispatch_ticket_id = ticket_id.to_string();
+    let dispatch_dry_run = dry_run;
+    let dispatch_config: Arc<AppConfig> = Arc::new((*config).clone());
+    let dispatch_ticket = Arc::new(ticket.clone());
+    let (_, _last_text) = loop_runner::run_llm_loop(
+        &model,
+        &mut history,
+        tools,
+        max_actions,
+        move |name, args, _choices| {
+            let logger = Arc::clone(&dispatch_logger);
+            let ctx = Arc::clone(&dispatch_tool_ctx);
+            let ticket_id = dispatch_ticket_id.clone();
+            let is_terminal = is_terminal_tool(&name);
+            let name_str = name.clone();
+            let dry_run_local = dispatch_dry_run;
+            let cfg = Arc::clone(&dispatch_config);
+            let tkt = Arc::clone(&dispatch_ticket);
+            async move {
+                logger.info(&format!("[agent] ticket {ticket_id}: calling tool '{name_str}' args={args}"));
+                if dry_run_local {
+                    println!("[dry-run] would call tool '{name_str}' with args: {args}");
+                }
+                let result = if name_str == "dispatch" {
+                    handle_dispatch_tool(&args, &tkt, dry_run_local, client, cfg.as_ref(), Arc::clone(&logger)).await
+                } else {
+                    dispatch(&name_str, &args, &ctx).await
+                };
+                logger.debug(&format!("[agent] ticket {ticket_id}: tool '{name_str}' result={result}"));
+                if is_terminal {
+                    logger.info(&format!("[agent] ticket {ticket_id}: terminal tool called, ending cycle"));
+                }
+                (result, is_terminal)
             }
+        },
+    )
+    .await?;
 
-            let result = if name == "dispatch" {
-                handle_dispatch_tool(&args, &ticket, dry_run, client, config, Arc::clone(&logger)).await
-            } else {
-                dispatch(name, &args, &tool_ctx).await
-            };
-
-            logger.debug(&format!("[agent] ticket {ticket_id}: tool '{name}' result={result}"));
-            history.push(Message::tool_result(tc.id.clone(), result.clone()));
-
-            action_count += 1;
-
-            if is_terminal_tool(name) {
-                terminal = true;
-                if name == "done" && !dry_run {
-                    let sleep_repo = ContextRepository::open(&config.memory_repo_path(), &config.agent.name);
-                    let sleep_ticket = ticket.clone();
-                    let sleep_config_threshold_files = config.defrag_file_threshold();
-                    let sleep_config_threshold_kb = config.defrag_size_threshold_kb();
-                    let sleep_logger = Arc::clone(&logger);
-                    if let Ok(repo) = sleep_repo {
-                        let sleep_client = client;
-                        let sleep_llm_model = llm_cfg.model.clone();
-                        if let Err(e) = run_sleep_time_agent(
-                            sleep_client,
-                            &sleep_llm_model,
-                            &sleep_ticket,
-                            repo,
-                            sleep_config_threshold_files,
-                            sleep_config_threshold_kb,
-                            &config.agent.name,
-                            &config.memory_repo_path(),
-                            Arc::clone(&sleep_logger),
-                        ).await {
-                            sleep_logger.error(&format!("[sleep-time] reflection error for {ticket_id}: {e}"));
+    // Inspect history to count actions and detect `done` (sleep-time trigger).
+    let mut action_count = 0usize;
+    let mut did_done = false;
+    for msg in &history {
+        match msg {
+            Message::User { content } => {
+                for c in content.iter() {
+                    let s = serde_json::to_string(c).unwrap_or_default();
+                    if s.contains("\"type\":\"toolresult\"")
+                        || s.contains("\"type\":\"tool_result\"")
+                        || s.contains("tool_call_id")
+                    {
+                        action_count += 1;
+                    }
+                }
+            }
+            Message::Assistant { content, .. } => {
+                for c in content.iter() {
+                    if let rig_core::completion::AssistantContent::ToolCall(tc) = c {
+                        if tc.function.name == "done" {
+                            did_done = true;
                         }
                     }
                 }
             }
-        }
-
-        if terminal {
-            logger.info(&format!("[agent] ticket {ticket_id}: terminal tool called, ending cycle"));
-            break;
+            _ => {}
         }
     }
-
     if action_count > 0 {
         logger.info(&format!("[agent] ticket {ticket_id}: took {action_count} action(s)"));
     } else {
         logger.info(&format!("[agent] ticket {ticket_id}: no actions taken"));
     }
 
-    Ok(())
-}
+    if did_done && !dry_run {
+        let sleep_repo = ContextRepository::open(&config.memory_repo_path(), &config.agent.name);
+        let sleep_ticket = ticket.clone();
+        let sleep_config_threshold_files = config.defrag_file_threshold();
+        let sleep_config_threshold_kb = config.defrag_size_threshold_kb();
+        let sleep_logger = Arc::clone(&logger);
+        if let Ok(repo) = sleep_repo {
+            let sleep_client = client;
+            let sleep_llm_model = llm_cfg.model.clone();
+            if let Err(e) = run_sleep_time_agent(
+                sleep_client,
+                &sleep_llm_model,
+                &sleep_ticket,
+                repo,
+                sleep_config_threshold_files,
+                sleep_config_threshold_kb,
+                &config.agent.name,
+                &config.memory_repo_path(),
+                Arc::clone(&sleep_logger),
+            ).await {
+                sleep_logger.error(&format!("[sleep-time] reflection error for {ticket_id}: {e}"));
+            }
+        }
+    }
 
-async fn handle_dispatch_tool<C>(
+    Ok(())
+}async fn handle_dispatch_tool<C>(
     args: &str,
     ticket: &crate::models::Ticket,
     dry_run: bool,
@@ -418,110 +415,87 @@ where
         sub_cfg.name, ticket.summary.id
     ));
 
-    let mut action_count = 0usize;
     let mut history: Vec<Message> = vec![
         Message::system(ctx_msg.system.clone()),
         Message::user(ctx_msg.user.clone()),
     ];
 
-    loop {
-        if action_count >= max_actions {
-            logger.info(&format!("[subagent:{}] hit action cap without returning", sub_cfg.name));
-            return "error: subagent hit action cap without returning a result".to_string();
-        }
+    // Open board, compaction store, todo store, and workspace once before the loop.
+    let tool_board = match build_board(config, Arc::clone(&logger)).await {
+        Ok(b) => b,
+        Err(e) => return format!("error building board: {e}"),
+    };
+    let tool_compaction = match CompactionStore::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => return format!("error opening compaction: {e}"),
+    };
+    let tool_todos = match TodoStore::open(&db_path) {
+        Ok(t) => t,
+        Err(e) => return format!("error opening todo store: {e}"),
+    };
 
-        let req = CompletionRequest {
-            model: None,
-            preamble: None,
-            chat_history: rig_core::one_or_many::OneOrMany::many(history.clone())
-                .expect("history is non-empty"),
-            documents: vec![],
-            tools: tools.clone(),
-            temperature: None,
-            max_tokens: None,
-            tool_choice: None,
-            additional_params: None,
-            output_schema: None,
-        };
+    let tool_ctx = ToolContext {
+        ticket_id: ticket.summary.id.clone(),
+        agent_scope: sub_cfg.name.clone(),
+        board: tool_board,
+        compaction_store: tool_compaction,
+        todo_store: tool_todos,
+        context_repo: context_repo.clone(),
+        dry_run,
+        logger: Arc::clone(&logger),
+        workspace: config.workspace_base_path().map(WorkspaceStore::new),
+    };
+    let tool_ctx = Arc::new(tool_ctx);
 
-        let response = match model.completion(req).await {
-            Ok(r) => r,
-            Err(e) => return format!("error: LLM completion error: {e}"),
-        };
-
-        let choices: Vec<AssistantContent> = response.choice.into_iter().collect();
-
-        let last_text = choices.iter()
-            .filter_map(|c| if let AssistantContent::Text(t) = c { Some(t.text.clone()) } else { None })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let tool_calls: Vec<_> = choices.iter()
-            .filter_map(|c| if let AssistantContent::ToolCall(tc) = c { Some(tc.clone()) } else { None })
-            .collect();
-
-        if let Ok(content) = rig_core::one_or_many::OneOrMany::many(choices) {
-            history.push(Message::Assistant { id: None, content });
-        }
-
-        if tool_calls.is_empty() {
-            logger.info(&format!("[subagent:{}] no tool calls, returning last text", sub_cfg.name));
-            return last_text;
-        }
-
-        let tool_board = match build_board(config, Arc::clone(&logger)).await {
-            Ok(b) => b,
-            Err(e) => return format!("error building board: {e}"),
-        };
-        let tool_compaction = match CompactionStore::open(&db_path) {
-            Ok(c) => c,
-            Err(e) => return format!("error opening compaction: {e}"),
-        };
-        let tool_todos = match TodoStore::open(&db_path) {
-            Ok(t) => t,
-            Err(e) => return format!("error opening todo store: {e}"),
-        };
-
-        let tool_ctx = ToolContext {
-            ticket_id: ticket.summary.id.clone(),
-            agent_scope: sub_cfg.name.clone(),
-            board: tool_board,
-            compaction_store: tool_compaction,
-            todo_store: tool_todos,
-            context_repo: match ContextRepository::open(&config.memory_repo_path(), &config.agent.name) {
-                Ok(r) => r,
-                Err(e) => return format!("error opening context repo: {e}"),
-            },
-            dry_run,
-            logger: Arc::clone(&logger),
-            workspace: config.workspace_base_path().map(WorkspaceStore::new),
-        };
-
-        let mut terminal = false;
-        let mut result_value = String::new();
-
-        for tc in &tool_calls {
-            let name = &tc.function.name;
-            let args = tc.function.arguments.to_string();
-
-            logger.info(&format!("[subagent:{}] calling tool '{name}' args={args}", sub_cfg.name));
-
-            let result = dispatch(name, &args, &tool_ctx).await;
-
-            logger.debug(&format!("[subagent:{}] tool '{name}' result={result}", sub_cfg.name));
-
-            if name == "return" {
-                result_value = result.clone();
-                terminal = true;
+    let subagent_name = sub_cfg.name.clone();
+    let dispatch_logger = Arc::clone(&logger);
+    let dispatch_tool_ctx = Arc::clone(&tool_ctx);
+    let mut last_return_value: Option<String> = None;
+    let (outcome, last_text) = loop_runner::run_llm_loop(
+        &model,
+        &mut history,
+        tools,
+        max_actions,
+        move |name, args, _choices| {
+            let logger = Arc::clone(&dispatch_logger);
+            let ctx = Arc::clone(&dispatch_tool_ctx);
+            let is_return = name == "return";
+            let sub_name = subagent_name.clone();
+            async move {
+                logger.info(&format!("[subagent:{sub_name}] calling tool '{name}' args={args}"));
+                let result = dispatch(&name, &args, &ctx).await;
+                logger.debug(&format!("[subagent:{sub_name}] tool '{name}' result={result}"));
+                (result, is_return)
             }
+        },
+    )
+    .await
+    .unwrap_or_else(|e| (loop_runner::LoopOutcome::NoToolCalls, format!("error: {e}")));
 
-            history.push(Message::tool_result(tc.id.clone(), result));
-            action_count += 1;
-        }
-
-        if terminal {
+    match outcome {
+        loop_runner::LoopOutcome::Terminal => {
+            // The last tool call in the terminal turn was `return`; recover the
+            // return value from the just-appended history entry.
+            if let Some(Message::User { content }) = history.last() {
+                if let Some(c) = content.iter().next() {
+                    let s = serde_json::to_string(c).unwrap_or_default();
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&s) {
+                        if let Some(text) = parsed.get("text").and_then(|v| v.as_str()) {
+                            last_return_value = Some(text.to_string());
+                        }
+                    }
+                }
+            }
             logger.info(&format!("[subagent:{}] return called, finishing", sub_cfg.name));
-            return result_value;
+            last_return_value.unwrap_or(last_text)
+        }
+        loop_runner::LoopOutcome::CapReached => {
+            logger.info(&format!("[subagent:{}] hit action cap without returning", sub_cfg.name));
+            "error: subagent hit action cap without returning a result".to_string()
+        }
+        loop_runner::LoopOutcome::NoToolCalls => {
+            logger.info(&format!("[subagent:{}] no tool calls, returning last text", sub_cfg.name));
+            last_text
         }
     }
 }
@@ -587,51 +561,29 @@ Current repository index:\n{tree_index}"
         Message::user(user),
     ];
 
-    for _ in 0..10usize {
-        let req = CompletionRequest {
-            model: None,
-            preamble: None,
-            chat_history: rig_core::one_or_many::OneOrMany::many(history.clone())
-                .expect("history non-empty"),
-            documents: vec![],
-            tools: sleep_tools.clone(),
-            temperature: None,
-            max_tokens: None,
-            tool_choice: None,
-            additional_params: None,
-            output_schema: None,
-        };
+    let dispatch_logger = Arc::clone(&logger);
+    let (outcome, _last_text) = loop_runner::run_llm_loop(
+        &model,
+        &mut history,
+        sleep_tools,
+        10,
+        move |name, args, _choices| {
+            let logger = Arc::clone(&dispatch_logger);
+            let repo_clone = context_repo.clone();
+            async move {
+                let ctx = tools::SleepToolContext {
+                    context_repo: repo_clone,
+                    logger: Arc::clone(&logger),
+                };
+                let result = tools::dispatch_sleep_tool(&name, &args, &ctx).await;
+                logger.debug(&format!("[sleep-time] tool '{name}' result={result}"));
+                (result, false)
+            }
+        },
+    )
+    .await?;
 
-        let response = model.completion(req).await.map_err(|e| {
-            OrgaError::BackendError(format!("[sleep-time] LLM error: {e}"))
-        })?;
-
-        let choices: Vec<AssistantContent> = response.choice.into_iter().collect();
-        let tool_calls: Vec<_> = choices.iter()
-            .filter_map(|c| if let AssistantContent::ToolCall(tc) = c { Some(tc.clone()) } else { None })
-            .collect();
-
-        if let Ok(content) = rig_core::one_or_many::OneOrMany::many(choices) {
-            history.push(Message::Assistant { id: None, content });
-        }
-
-        if tool_calls.is_empty() {
-            break;
-        }
-
-        let sleep_tool_ctx = tools::SleepToolContext {
-            context_repo: ContextRepository::open(memory_repo_path, agent_name)?,
-            logger: Arc::clone(&logger),
-        };
-
-        for tc in &tool_calls {
-            let name = &tc.function.name;
-            let args = tc.function.arguments.to_string();
-            let result = tools::dispatch_sleep_tool(name, &args, &sleep_tool_ctx).await;
-            logger.debug(&format!("[sleep-time] tool '{name}' result={result}"));
-            history.push(Message::tool_result(tc.id.clone(), result));
-        }
-    }
+    logger.debug(&format!("[sleep-time] loop ended with {:?}", outcome));
 
     // Check thresholds and run defrag if needed
     let fresh_repo = ContextRepository::open(memory_repo_path, agent_name)?;
@@ -692,52 +644,29 @@ Current repository:\n{tree}"
         Message::user("Please clean up the context repository now.".to_string()),
     ];
 
-    for _ in 0..20usize {
-        let req = CompletionRequest {
-            model: None,
-            preamble: None,
-            chat_history: rig_core::one_or_many::OneOrMany::many(history.clone())
-                .expect("history non-empty"),
-            documents: vec![],
-            tools: defrag_tools.clone(),
-            temperature: None,
-            max_tokens: None,
-            tool_choice: None,
-            additional_params: None,
-            output_schema: None,
-        };
+    let dispatch_logger = Arc::clone(&logger);
+    let (outcome, _last_text) = loop_runner::run_llm_loop(
+        &model,
+        &mut history,
+        defrag_tools,
+        20,
+        move |name, args, _choices| {
+            let logger = Arc::clone(&dispatch_logger);
+            let repo_clone = repo.clone();
+            async move {
+                let ctx = tools::SleepToolContext {
+                    context_repo: repo_clone,
+                    logger: Arc::clone(&logger),
+                };
+                let result = tools::dispatch_sleep_tool(&name, &args, &ctx).await;
+                logger.debug(&format!("[defrag] tool '{name}' result={result}"));
+                (result, false)
+            }
+        },
+    )
+    .await?;
 
-        let response = model.completion(req).await.map_err(|e| {
-            OrgaError::BackendError(format!("[defrag] LLM error: {e}"))
-        })?;
-
-        let choices: Vec<AssistantContent> = response.choice.into_iter().collect();
-        let tool_calls: Vec<_> = choices.iter()
-            .filter_map(|c| if let AssistantContent::ToolCall(tc) = c { Some(tc.clone()) } else { None })
-            .collect();
-
-        if let Ok(content) = rig_core::one_or_many::OneOrMany::many(choices) {
-            history.push(Message::Assistant { id: None, content });
-        }
-
-        if tool_calls.is_empty() {
-            break;
-        }
-
-        let sleep_tool_ctx = tools::SleepToolContext {
-            context_repo: ContextRepository::open(memory_repo_path, agent_name)?,
-            logger: Arc::clone(&logger),
-        };
-
-        for tc in &tool_calls {
-            let name = &tc.function.name;
-            let args = tc.function.arguments.to_string();
-            let result = tools::dispatch_sleep_tool(name, &args, &sleep_tool_ctx).await;
-            logger.debug(&format!("[defrag] tool '{name}' result={result}"));
-            history.push(Message::tool_result(tc.id.clone(), result));
-        }
-    }
-
+    logger.debug(&format!("[defrag] loop ended with {:?}", outcome));
     logger.info("[defrag] defragmentation complete");
     Ok(())
 }

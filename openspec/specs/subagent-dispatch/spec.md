@@ -20,7 +20,7 @@ The agent SHALL support a list of subagent definitions in config under `[[subage
 - **THEN** the agent falls back to the existing flat loop behavior with no behavior change
 
 ### Requirement: Subagent loop
-When dispatched, a subagent SHALL run its own bounded LLM loop with its own message history, its own tool set (from config), and its own system prompt that includes the ticket context and the task string provided by the main agent. The subagent loop SHALL NOT have access to `comment`, `done`, or `skip` unless explicitly listed in its `tools` config. The subagent loop SHALL terminate when it calls `return(result)`, returns with no tool calls, or hits its action cap.
+When dispatched, a subagent SHALL run its own bounded LLM loop via `run_llm_loop` with its own message history, its own tool set (from config), and its own system prompt that includes the ticket context and the task string provided by the main agent. The board client SHALL be built once before the loop begins. The `ContextRepository` SHALL be opened once and passed into `ToolContext`. The subagent loop SHALL NOT have access to `comment`, `done`, or `skip` unless explicitly listed in its `tools` config. The subagent loop SHALL terminate when it calls `return(result)`, returns with no tool calls, or hits its action cap.
 
 #### Scenario: Subagent runs isolated loop
 - **WHEN** the main agent calls `dispatch(subagent: "researcher", task: "summarize the linked docs")`
@@ -37,6 +37,10 @@ When dispatched, a subagent SHALL run its own bounded LLM loop with its own mess
 #### Scenario: Subagent loop ends with no tool calls
 - **WHEN** the subagent LLM returns a response with no tool calls
 - **THEN** the subagent loop ends; the last text response from the LLM is returned as the result
+
+#### Scenario: Board built once per subagent dispatch
+- **WHEN** a subagent loop is started
+- **THEN** `build_board` is called once before the tool-call loop, not once per iteration
 
 ### Requirement: Subagent skill injection
 If a subagent config specifies a `skills` list, those skills SHALL be loaded from the configured skills path and injected into the subagent's system prompt, regardless of keyword matching. If `skills` is not specified, standard skill matching by ticket title applies.

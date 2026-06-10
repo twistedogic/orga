@@ -6,7 +6,7 @@ Background reflection agent that runs after done() to persist cross-ticket learn
 ## Requirements
 
 ### Requirement: Sleep-time agent triggered after done()
-The agent loop SHALL spawn a sleep-time reflection agent asynchronously after `done()` resolves successfully. The sleep-time agent SHALL receive the completed ticket's full context (title, description, comments) and the current memory file tree index, and SHALL be prompted to persist cross-ticket learnings into topic files in the context repository.
+The agent loop SHALL invoke the sleep-time reflection agent after `done()` resolves successfully, using `run_llm_loop`. The sleep-time agent SHALL receive the completed ticket's full context (title, description, comments) and the current memory file tree index, and SHALL be prompted to persist cross-ticket learnings into topic files in the context repository. The sleep-time and defrag passes SHALL each open a fresh `ContextRepository` exactly once at the start of that pass.
 
 #### Scenario: done() triggers reflection
 - **WHEN** the main agent calls `done()` and the board operation succeeds
@@ -19,6 +19,10 @@ The agent loop SHALL spawn a sleep-time reflection agent asynchronously after `d
 #### Scenario: skip() does not trigger reflection
 - **WHEN** the main agent calls `skip()`
 - **THEN** no sleep-time agent is spawned
+
+#### Scenario: ContextRepository opened once per reflection pass
+- **WHEN** the sleep-time agent runs
+- **THEN** `ContextRepository::open` is called once at the start of the pass, not once per iteration
 
 ### Requirement: Sleep-time agent writes to context repository
 The sleep-time agent SHALL use `memory_read`, `memory_write`, and `memory_list` tools to update the context repository with learnings from the completed ticket. It SHALL write only cross-ticket-valuable information (themes, patterns, conventions, people context) — not ticket-specific facts.

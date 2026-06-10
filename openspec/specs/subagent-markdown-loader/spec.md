@@ -6,7 +6,7 @@ Defines how orga discovers and parses markdown-based subagent definitions from a
 ## Requirements
 
 ### Requirement: Markdown agent discovery
-The system SHALL scan for `*.md` files in an `agents/` directory located in the same directory as the loaded config file. If the `agents/` directory does not exist, the system SHALL silently skip discovery with no error.
+The system SHALL scan for `*.md` files in an `agents/` directory located in the same directory as the loaded config file. If the `agents/` directory does not exist, the system SHALL silently skip discovery with no error. The discovery and parsing logic SHALL live in `src/agent/agents.rs`, not in `src/config.rs`. `AppConfig::load` SHALL call into `agent::agents::load_markdown_agents` to populate subagents.
 
 #### Scenario: agents/ directory exists with markdown files
 - **WHEN** the config is at `/path/to/orga.toml` and `/path/to/agents/researcher.md` exists
@@ -19,6 +19,10 @@ The system SHALL scan for `*.md` files in an `agents/` directory located in the 
 #### Scenario: agents/ directory is empty
 - **WHEN** the `agents/` directory exists but contains no `*.md` files
 - **THEN** no markdown agents are loaded and no error is raised
+
+#### Scenario: Logic lives in agent module
+- **WHEN** `AppConfig::load` populates markdown agents
+- **THEN** it delegates to `agent::agents::load_markdown_agents`; no markdown-parsing logic remains in `config.rs`
 
 ### Requirement: Markdown agent file format
 Each `*.md` file SHALL consist of an optional YAML frontmatter block delimited by `---` lines followed by a markdown body. The file stem (filename without `.md`) SHALL become the subagent `name`. The document body (after the closing `---`) SHALL become the `system_prompt`.

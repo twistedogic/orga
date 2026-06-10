@@ -1,9 +1,4 @@
-# agent-tools Specification
-
-## Purpose
-Typed tool set exposed to the LLM during a ticket cycle. Each tool maps to an existing orga board, memory, or artifact operation. Dry-run mode suppresses all mutating tools while allowing read tools to execute.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Tool set
 The agent loop SHALL expose the following tools to the LLM during a ticket cycle. Each tool SHALL correspond to an existing orga operation. In dry-run mode, mutating tools SHALL be logged but not executed; read tools SHALL execute normally. When subagents are configured, the main agent receives a narrowed tool set; subagents receive the tool set defined in their config plus `return` and `todos`. When no subagents are configured, the full tool set plus `todos` is exposed unchanged. `todos` SHALL always be available to all agents regardless of config. The four memory tools (`memory_list`, `memory_read`, `memory_write`, `memory_search`) SHALL always be available to all agents regardless of config. `move_ticket` SHALL NOT be listed in `VALID_TOOLS` until a dispatch implementation exists.
@@ -29,46 +24,6 @@ The agent loop SHALL expose the following tools to the LLM during a ticket cycle
 - **WHEN** the main agent loop runs (with or without subagents configured)
 - **THEN** `todos` is present in the tool definitions regardless of config
 
-#### Scenario: todos always available to subagent
-- **WHEN** a subagent loop runs
-- **THEN** `todos` is present in the tool definitions regardless of the subagent's `tools` config
-
-#### Scenario: Memory tools always available to main agent
-- **WHEN** the main agent loop runs (with or without subagents configured)
-- **THEN** all four memory tools are present in tool definitions regardless of config
-
-#### Scenario: Memory tools always available to subagent
-- **WHEN** a subagent loop runs
-- **THEN** all four memory tools are present in tool definitions regardless of the subagent's `tools` config
-
-#### Scenario: Main agent has narrowed tool set
-- **WHEN** subagents are configured and the main agent loop runs
-- **THEN** the LLM only sees `comment`, `dispatch`, `skip`, `done`, `compact`, `todos`, `memory_list`, `memory_read`, `memory_write`, `memory_search` in tool definitions
-
-#### Scenario: Full tool set when no subagents configured
-- **WHEN** no subagents are configured
-- **THEN** the full tool set including `todos` and all four memory tools is exposed to the LLM
-
-#### Scenario: set_memory tool no longer present
-- **WHEN** the main agent loop runs
-- **THEN** `set_memory` is NOT present in tool definitions
-
-#### Scenario: comment tool posts to board
-- **WHEN** the LLM calls `comment(text: "update: work started")`
-- **THEN** `board.comment(ticket_id, text)` is called and the result is returned to the LLM
-
-#### Scenario: done tool returns ticket
-- **WHEN** the LLM calls `done(comment: "work complete")`
-- **THEN** `board.return_ticket(ticket_id, Some("work complete"))` is called and the cycle ends
-
-#### Scenario: done tool without comment
-- **WHEN** the LLM calls `done()` with no comment
-- **THEN** `board.return_ticket(ticket_id, None)` is called
-
-#### Scenario: skip tool ends cycle silently
-- **WHEN** the LLM calls `skip()`
-- **THEN** no board mutation occurs and the cycle ends
-
 #### Scenario: move_ticket rejected at validation
 - **WHEN** a subagent config lists `move_ticket` in its `tools` array
 - **THEN** `AppConfig::validate` returns a `ConfigError` referencing an unknown tool
@@ -76,10 +31,3 @@ The agent loop SHALL expose the following tools to the LLM during a ticket cycle
 #### Scenario: Single authoritative tool definition function
 - **WHEN** code needs the full set of tool definitions
 - **THEN** it calls `all_tool_definitions()` directly; the `tool_definitions()` alias does not exist
-
-### Requirement: Tool error handling
-If a tool call fails (e.g., invalid ticket ID, network error, artifact not found), the error SHALL be returned as a `tool_result` with `is_error: true`. The cycle SHALL continue within the cap.
-
-#### Scenario: Tool error returned to LLM
-- **WHEN** a tool call fails due to a network or board error
-- **THEN** the error message is returned as a tool_result and the LLM receives it in the next turn

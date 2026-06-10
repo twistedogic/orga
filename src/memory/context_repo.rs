@@ -1,15 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use git2::{Repository, Signature};
-use rusqlite::{params, Connection};
 
 use crate::error::OrgaError;
-
-// ---------------------------------------------------------------------------
-// ContextRepository — git-backed topic-organized memory store
-// ---------------------------------------------------------------------------
 
 pub struct ContextEntry {
     pub path: String,
@@ -21,6 +15,7 @@ pub struct RepoStats {
     pub total_size_kb: u64,
 }
 
+#[derive(Clone)]
 pub struct ContextRepository {
     root: PathBuf,
     agent_name: String,
@@ -218,75 +213,85 @@ impl ContextRepository {
         }
         Ok(())
     }
-}
 
-fn extract_frontmatter_description(content: &str) -> String {
-    if !content.starts_with("---") {
-        return String::new();
-    }
-    let after = &content[3..];
-    let end = match after.find("---") {
-        Some(i) => i,
-        None => return String::new(),
-    };
-    let frontmatter = &after[..end];
-    for line in frontmatter.lines() {
-        if let Some(rest) = line.strip_prefix("description:") {
-            return rest.trim().trim_matches('"').trim_matches('\'').to_string();
+    pub fn delete(&self, rel_path: &str) -> Result<(), OrgaError> {
+        let full = self.root.join(rel_path);
+        if !full.exists() {
+            return Err(OrgaError::NotFound(format!("memory file not found: {rel_path}")));
         }
+
+        let content = fs::read_to_string(&full)
+            .map_err(|e| OrgaError::BackendError(format!("cannot read {rel_path}: {e}")))?;
+        let description = extract_frontmatter_description(&content);
+        let terms = extract_significant_terms(&description);
+
+        // If there are significant terms, verify at least one appears elsewhere
+        if !terms.is_empty() {
+            let mut covered = false;
+            'outer: for entry in self.list()? {
+                if entry.path == rel_path {
+                    continue;
+                }
+                let other_content = match self.read(&entry.path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let other_lower = other_content.to_lowercase();
+                for term in &terms {
+                    if other_lower.contains(term.as_str()) {
+                        covered = true;
+                        break 'outer;
+                    }
+                }
+            }
+            if !covered {
+                return Err(OrgaError::BackendError(format!(
+                    "cannot delete '{rel_path}': no other file covers its topics (description terms: {})",
+                    terms.join(", ")
+                )));
+            }
+        }
+
+        fs::remove_file(&full)
+            .map_err(|e| OrgaError::BackendError(format!("cannot delete {rel_path}: {e}")))?;
+
+        let repo = Repository::open(&self.root)
+            .map_err(|e| OrgaError::BackendError(format!("git open failed: {e}")))?;
+        let mut index = repo
+            .index()
+            .map_err(|e| OrgaError::BackendError(format!("git index error: {e}")))?;
+        index
+            .remove_path(std::path::Path::new(rel_path))
+            .map_err(|e| OrgaError::BackendError(format!("git index remove error: {e}")))?;
+        index
+            .write()
+            .map_err(|e| OrgaError::BackendError(format!("git index write error: {e}")))?;
+        let oid = index
+            .write_tree()
+            .map_err(|e| OrgaError::BackendError(format!("git write tree error: {e}")))?;
+        let tree = repo
+            .find_tree(oid)
+            .map_err(|e| OrgaError::BackendError(format!("git find tree error: {e}")))?;
+        let sig = Signature::now(&self.agent_name, "agent@orga")
+            .map_err(|e| OrgaError::BackendError(format!("git sig error: {e}")))?;
+        let parent = repo
+            .head()
+            .map_err(|e| OrgaError::BackendError(format!("git head error: {e}")))?
+            .peel_to_commit()
+            .map_err(|e| OrgaError::BackendError(format!("git peel error: {e}")))?;
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            &format!("delete: {rel_path}"),
+            &tree,
+            &[&parent],
+        )
+        .map_err(|e| OrgaError::BackendError(format!("git commit error: {e}")))?;
+
+        Ok(())
     }
-    String::new()
-}
 
-pub fn extract_significant_terms(description: &str) -> Vec<String> {
-    const STOPWORDS: &[&str] = &["the", "and", "for", "not", "are", "was", "but", "its"];
-    let mut terms: Vec<String> = description
-        .split(|c: char| !c.is_alphanumeric())
-        .map(|w| w.to_lowercase())
-        .filter(|w| w.len() >= 3 && !STOPWORDS.contains(&w.as_str()))
-        .collect();
-    terms.sort();
-    terms.dedup();
-    terms
-}
-
-// ---------------------------------------------------------------------------
-// DefragReport — analysis of repository health
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, serde::Serialize)]
-pub struct OversizedFile {
-    pub path: String,
-    pub line_count: usize,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct DuplicatePair {
-    pub path_a: String,
-    pub path_b: String,
-    pub shared_terms: Vec<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct DeletionCandidate {
-    pub path: String,
-    pub covered_by: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct DefragReport {
-    pub oversized: Vec<OversizedFile>,
-    pub duplicates: Vec<DuplicatePair>,
-    pub deletion_candidates: Vec<DeletionCandidate>,
-}
-
-impl DefragReport {
-    pub fn is_empty(&self) -> bool {
-        self.oversized.is_empty() && self.duplicates.is_empty() && self.deletion_candidates.is_empty()
-    }
-}
-
-impl ContextRepository {
     pub fn analyze(&self) -> Result<DefragReport, OrgaError> {
         let entries = self.list()?;
         let mut oversized = Vec::new();
@@ -374,226 +379,69 @@ impl ContextRepository {
     }
 }
 
-
-impl ContextRepository {
-    pub fn delete(&self, rel_path: &str) -> Result<(), OrgaError> {
-        let full = self.root.join(rel_path);
-        if !full.exists() {
-            return Err(OrgaError::NotFound(format!("memory file not found: {rel_path}")));
-        }
-
-        let content = fs::read_to_string(&full)
-            .map_err(|e| OrgaError::BackendError(format!("cannot read {rel_path}: {e}")))?;
-        let description = extract_frontmatter_description(&content);
-        let terms = extract_significant_terms(&description);
-
-        // If there are significant terms, verify at least one appears elsewhere
-        if !terms.is_empty() {
-            let mut covered = false;
-            'outer: for entry in self.list()? {
-                if entry.path == rel_path {
-                    continue;
-                }
-                let other_content = match self.read(&entry.path) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                let other_lower = other_content.to_lowercase();
-                for term in &terms {
-                    if other_lower.contains(term.as_str()) {
-                        covered = true;
-                        break 'outer;
-                    }
-                }
-            }
-            if !covered {
-                return Err(OrgaError::BackendError(format!(
-                    "cannot delete '{rel_path}': no other file covers its topics (description terms: {})",
-                    terms.join(", ")
-                )));
-            }
-        }
-
-        fs::remove_file(&full)
-            .map_err(|e| OrgaError::BackendError(format!("cannot delete {rel_path}: {e}")))?;
-
-        let repo = Repository::open(&self.root)
-            .map_err(|e| OrgaError::BackendError(format!("git open failed: {e}")))?;
-        let mut index = repo
-            .index()
-            .map_err(|e| OrgaError::BackendError(format!("git index error: {e}")))?;
-        index
-            .remove_path(std::path::Path::new(rel_path))
-            .map_err(|e| OrgaError::BackendError(format!("git index remove error: {e}")))?;
-        index
-            .write()
-            .map_err(|e| OrgaError::BackendError(format!("git index write error: {e}")))?;
-        let oid = index
-            .write_tree()
-            .map_err(|e| OrgaError::BackendError(format!("git write tree error: {e}")))?;
-        let tree = repo
-            .find_tree(oid)
-            .map_err(|e| OrgaError::BackendError(format!("git find tree error: {e}")))?;
-        let sig = Signature::now(&self.agent_name, "agent@orga")
-            .map_err(|e| OrgaError::BackendError(format!("git sig error: {e}")))?;
-        let parent = repo
-            .head()
-            .map_err(|e| OrgaError::BackendError(format!("git head error: {e}")))?
-            .peel_to_commit()
-            .map_err(|e| OrgaError::BackendError(format!("git peel error: {e}")))?;
-        repo.commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            &format!("delete: {rel_path}"),
-            &tree,
-            &[&parent],
-        )
-        .map_err(|e| OrgaError::BackendError(format!("git commit error: {e}")))?;
-
-        Ok(())
+fn extract_frontmatter_description(content: &str) -> String {
+    if !content.starts_with("---") {
+        return String::new();
     }
+    let after = &content[3..];
+    let end = match after.find("---") {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    let frontmatter = &after[..end];
+    for line in frontmatter.lines() {
+        if let Some(rest) = line.strip_prefix("description:") {
+            return rest.trim().trim_matches('"').trim_matches('\'').to_string();
+        }
+    }
+    String::new()
 }
 
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct CompactionRecord {
-    pub ticket_id: String,
-    pub summary: String,
-    pub compacted_through: DateTime<Utc>,
-    pub compacted_count: usize,
-    pub updated_at: DateTime<Utc>,
+pub fn extract_significant_terms(description: &str) -> Vec<String> {
+    const STOPWORDS: &[&str] = &["the", "and", "for", "not", "are", "was", "but", "its"];
+    let mut terms: Vec<String> = description
+        .split(|c: char| !c.is_alphanumeric())
+        .map(|w| w.to_lowercase())
+        .filter(|w| w.len() >= 3 && !STOPWORDS.contains(&w.as_str()))
+        .collect();
+    terms.sort();
+    terms.dedup();
+    terms
 }
 
-pub struct CompactionStore {
-    conn: Connection,
+// ---------------------------------------------------------------------------
+// DefragReport — analysis of repository health
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Serialize)]
+pub struct OversizedFile {
+    pub path: String,
+    pub line_count: usize,
 }
 
-impl CompactionStore {
-    pub fn open(db_path: &Path) -> Result<Self, OrgaError> {
-        if let Some(parent) = db_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                OrgaError::BackendError(format!(
-                    "cannot create memory dir {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
-        let conn = Connection::open(db_path)?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS comment_compaction (
-                ticket_id         TEXT PRIMARY KEY,
-                summary           TEXT NOT NULL,
-                compacted_through TEXT NOT NULL,
-                compacted_count   INTEGER NOT NULL,
-                updated_at        TEXT NOT NULL
-            );",
-        )?;
-        Ok(Self { conn })
-    }
-
-    pub fn set(
-        &self,
-        ticket_id: &str,
-        summary: &str,
-        compacted_through: DateTime<Utc>,
-        compacted_count: usize,
-    ) -> Result<(), OrgaError> {
-        let now = chrono::Utc::now().to_rfc3339();
-        let through = compacted_through.to_rfc3339();
-        self.conn.execute(
-            "INSERT OR REPLACE INTO comment_compaction
-             (ticket_id, summary, compacted_through, compacted_count, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![ticket_id, summary, through, compacted_count as i64, now],
-        )?;
-        Ok(())
-    }
-
-    pub fn get(&self, ticket_id: &str) -> Result<Option<CompactionRecord>, OrgaError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT ticket_id, summary, compacted_through, compacted_count, updated_at
-             FROM comment_compaction WHERE ticket_id = ?1",
-        )?;
-        let mut rows = stmt.query(params![ticket_id])?;
-        if let Some(row) = rows.next()? {
-            let through_str: String = row.get(2)?;
-            let updated_str: String = row.get(4)?;
-            let compacted_through = through_str
-                .parse::<DateTime<Utc>>()
-                .map_err(|e| OrgaError::BackendError(format!("invalid compacted_through: {e}")))?;
-            let updated_at = updated_str
-                .parse::<DateTime<Utc>>()
-                .map_err(|e| OrgaError::BackendError(format!("invalid updated_at: {e}")))?;
-            Ok(Some(CompactionRecord {
-                ticket_id: row.get(0)?,
-                summary: row.get(1)?,
-                compacted_through,
-                compacted_count: row.get::<_, i64>(3)? as usize,
-                updated_at,
-            }))
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub fn delete(&self, ticket_id: &str) -> Result<(), OrgaError> {
-        self.conn.execute(
-            "DELETE FROM comment_compaction WHERE ticket_id = ?1",
-            params![ticket_id],
-        )?;
-        Ok(())
-    }
+#[derive(Debug, serde::Serialize)]
+pub struct DuplicatePair {
+    pub path_a: String,
+    pub path_b: String,
+    pub shared_terms: Vec<String>,
 }
 
-pub struct TodoStore {
-    conn: Connection,
+#[derive(Debug, serde::Serialize)]
+pub struct DeletionCandidate {
+    pub path: String,
+    pub covered_by: String,
 }
 
-impl TodoStore {
-    pub fn open(db_path: &Path) -> Result<Self, OrgaError> {
-        if let Some(parent) = db_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                OrgaError::BackendError(format!(
-                    "cannot create memory dir {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
-        let conn = Connection::open(db_path)?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS agent_todos (
-                ticket_id  TEXT NOT NULL,
-                scope      TEXT NOT NULL,
-                todos      TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (ticket_id, scope)
-            );",
-        )?;
-        Ok(Self { conn })
-    }
+#[derive(Debug, serde::Serialize)]
+pub struct DefragReport {
+    pub oversized: Vec<OversizedFile>,
+    pub duplicates: Vec<DuplicatePair>,
+    pub deletion_candidates: Vec<DeletionCandidate>,
+}
 
-    pub fn set(&self, ticket_id: &str, scope: &str, todos: &str) -> Result<(), OrgaError> {
-        let now = chrono::Utc::now().to_rfc3339();
-        self.conn.execute(
-            "INSERT INTO agent_todos (ticket_id, scope, todos, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(ticket_id, scope) DO UPDATE SET todos = ?3, updated_at = ?4",
-            params![ticket_id, scope, todos, now],
-        )?;
-        Ok(())
-    }
-
-    pub fn get(&self, ticket_id: &str, scope: &str) -> Result<Option<String>, OrgaError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT todos FROM agent_todos WHERE ticket_id = ?1 AND scope = ?2",
-        )?;
-        let mut rows = stmt.query(params![ticket_id, scope])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row.get(0)?))
-        } else {
-            Ok(None)
-        }
+impl DefragReport {
+    pub fn is_empty(&self) -> bool {
+        self.oversized.is_empty() && self.duplicates.is_empty() && self.deletion_candidates.is_empty()
     }
 }
 
@@ -602,19 +450,11 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn open_temp_compaction_store() -> CompactionStore {
-        let dir = tempdir().unwrap();
-        let path = dir.keep().join("memory.db");
-        CompactionStore::open(&path).unwrap()
-    }
-
     fn open_temp_repo() -> (ContextRepository, tempfile::TempDir) {
         let dir = tempdir().unwrap();
         let repo = ContextRepository::open(&dir.path().join("memory"), "test-agent").unwrap();
         (repo, dir)
     }
-
-    // ContextRepository tests
 
     #[test]
     fn repo_list_returns_initial_overview() {
@@ -694,64 +534,6 @@ mod tests {
         assert_eq!(plain.description, "");
     }
 
-    // CompactionStore tests
-
-    #[test]
-    fn compaction_set_and_get_roundtrip() {
-        let store = open_temp_compaction_store();
-        let ts = chrono::DateTime::parse_from_rfc3339("2024-03-01T10:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        store.set("T-1", "summary text", ts, 10).unwrap();
-        let rec = store.get("T-1").unwrap().unwrap();
-        assert_eq!(rec.ticket_id, "T-1");
-        assert_eq!(rec.summary, "summary text");
-        assert_eq!(rec.compacted_count, 10);
-        assert_eq!(rec.compacted_through, ts);
-    }
-
-    #[test]
-    fn compaction_overwrite_replaces_record() {
-        let store = open_temp_compaction_store();
-        let ts1 = chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let ts2 = chrono::DateTime::parse_from_rfc3339("2024-06-01T00:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        store.set("T-1", "old summary", ts1, 5).unwrap();
-        store.set("T-1", "new summary", ts2, 20).unwrap();
-        let rec = store.get("T-1").unwrap().unwrap();
-        assert_eq!(rec.summary, "new summary");
-        assert_eq!(rec.compacted_count, 20);
-        assert_eq!(rec.compacted_through, ts2);
-    }
-
-    #[test]
-    fn compaction_delete_removes_record() {
-        let store = open_temp_compaction_store();
-        let ts = chrono::DateTime::parse_from_rfc3339("2024-03-01T10:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        store.set("T-1", "summary", ts, 5).unwrap();
-        store.delete("T-1").unwrap();
-        assert!(store.get("T-1").unwrap().is_none());
-    }
-
-    #[test]
-    fn compaction_delete_non_existent_is_noop() {
-        let store = open_temp_compaction_store();
-        store.delete("NONEXISTENT").unwrap();
-    }
-
-    #[test]
-    fn compaction_get_missing_returns_none() {
-        let store = open_temp_compaction_store();
-        assert!(store.get("MISSING").unwrap().is_none());
-    }
-
-    // extract_significant_terms tests
-
     #[test]
     fn terms_removes_stopwords() {
         let terms = extract_significant_terms("the quick and the fox");
@@ -785,8 +567,6 @@ mod tests {
     fn terms_empty_string_returns_empty() {
         assert!(extract_significant_terms("").is_empty());
     }
-
-    // ContextRepository::delete tests
 
     #[test]
     fn delete_allowed_when_terms_covered_elsewhere() {
@@ -865,8 +645,6 @@ mod tests {
         let msg = git_repo.head().unwrap().peel_to_commit().unwrap().message().unwrap().to_string();
         assert_eq!(msg, "delete: themes/auth-notes.md");
     }
-
-    // DefragReport / analyze() tests
 
     #[test]
     fn analyze_detects_oversized_file() {
