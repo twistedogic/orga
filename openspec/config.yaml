@@ -1,52 +1,107 @@
 schema: spec-driven
 
 context: |
-  Project: orga — an agent-native kanban board CLI written in Rust.
+  Project: orga — a Rust kanban board CLI with an embedded LLM agent loop. The repo is a
+  workspace for tooling that lets an LLM act as a first-class board member on Trello or
+  Linear boards, run as either an on-demand CLI skill or a long-lived daemon.
 
-  Purpose: A CLI tool that LLM agents invoke as a skill to interact with shared kanban boards.
-  The agent is a first-class board member alongside human teammates. Instead of a chat interface,
-  the agent communicates via ticket comments, creates sub-tickets, and moves tickets through the board.
-  The agent skill lives at skills/orga/SKILL.md.
+  Purpose:
+  - CLI mode: commands an invoking agent skill runs to read and mutate the board
+    (list tickets, comment, assign, create subs, move, return). Skill lives at
+    skills/orga/SKILL.md.
+  - Agent mode (`orga agent [--once]`): a Rust-resident loop that polls the board on a
+    schedule, processes assigned tickets through an LLM, and posts results back. The
+    `--once` flag runs a single pass without binding the metrics server.
 
   Tech stack:
   - Language: Rust (edition 2024)
   - CLI: clap v4 with derive macros
-  - HTTP: reqwest (blocking client)
-  - Storage: rusqlite (SQLite, bundled) for per-ticket agent memory
+  - HTTP: reqwest (blocking client for board APIs; also used indirectly through rig-core)
+  - LLM: rig-core 0.37 (providers behind the `CompletionModel` trait)
+  - Storage: rusqlite (SQLite, bundled) for per-ticket agent memory and TodoStore
+  - VCS: git2 for the git-backed context repository
   - Config: TOML via serde + toml crate
-  - Serialization: serde + serde_json
-  - Error handling: thiserror
+  - Serialization: serde + serde_json + serde_yaml
+  - Async runtime: tokio (rt-multi-thread, macros, time, process)
+  - Metrics: prometheus 0.13
+  - Error handling: thiserror via `OrgaError`
+  - Misc: async-trait, chrono, inquire (interactive prompts)
 
   Architecture:
-  - `Board` trait — backend-agnostic abstraction; all CLI commands dispatch through it
-  - `TrelloBackend` — first and current implementation of the `Board` trait via Trello REST API v1
-  - `MemoryStore` — per-ticket SQLite memory store; agents persist context across skill invocations
-  - `AppConfig` — TOML config loaded from `~/.orga/config.toml` or via `--config` / `ORGA_CONFIG`
-  - One agent identity per config file; one board per config
+  - `Board` trait — backend-agnostic abstraction; all CLI commands and the agent loop
+    dispatch through it via `build_board`
+  - `TrelloBackend`, `LinearBackend` — the two current implementations of `Board`
+  - `AppConfig` — TOML config from `~/.orga/config.toml` or `--config` / `ORGA_CONFIG`;
+    one agent identity per config, one board per config; sections include `[agent]`,
+    `[subagents]`, `[compaction]`, optional `[metrics]`, and `[systemd]`
+  - `run_agent(once, dry_run, &AppConfig, Logger)` — entry point for agent mode; drives
+    the poll cycle, dispatches tickets into `process_ticket`, and optionally binds the
+    Prometheus `/metrics` endpoint (daemon only, when `[metrics]` is set)
+  - `run_llm_loop` — single LLM call site in src/agent/loop_runner.rs; classifies rig
+    errors into `LlmErrorKind` and records latency, tokens, and outcomes via
+    `AgentMetrics`
+  - `ContextRepository` (src/memory/context_repo.rs) — git-backed long-term memory
+    with `list`, `read`, `write` (commits on every write), `search`, plus a defrag
+    pass that merges oversize/duplicate/stale entries
+  - `MemoryStore` (legacy per-ticket notes) and `CompactionStore` — SQLite-backed
+    stores owned by the agent
+  - `TodoStore` — per-scope (board / ticket) persistent todo lists exposed via the
+    `todos` tool
+  - `AgentMetrics` (src/metrics.rs) — Prometheus recorder; counters/histograms for
+    LLM requests by error kind, token usage, tool calls by scope + outcome, and
+    ticket processing duration; served over a one-shot TCP listener (no keep-alive,
+    no `/healthz`)
 
   Key constraints:
-  - CLI is stateless between invocations — the invoking agent skill handles scheduling
-  - Agent permissions: comment, assign, move, create sub-tickets — never close tickets
-  - All read commands support `--json` flag for machine-readable output
-  - Errors with `--json` produce `{"error": "<message>"}` to stderr with non-zero exit code
-  - Memory is private to the agent (local), not shared on the board
-  - No daemon, no polling loop — purely on-demand CLI
+  - Agent permissions: comment, assign, create sub-tickets, return tickets; never
+    close tickets. Tool set is declared once in `MAIN_TOOLS` and drives both the
+    prompt text and the runtime definitions.
+  - Per-agent prompts live as markdown files under src/agent/prompts/ (main_agent,
+    dispatcher, sleep_time, defrag); `AGENTS.md` in the workspace is appended to the
+    main agent's context when present.
+  - All read commands support `--json`; errors with `--json` produce
+    `{"error": "<message>"}` on stderr with non-zero exit
+  - Errors propagate as `OrgaError` from public APIs (board, agent, memory,
+    metrics); no unwrap in production code paths
+  - Bind failures on the metrics listener are non-fatal; the daemon logs a warning
+    and continues without metrics
 
   Module layout:
-  - src/lib.rs — public module exports
-  - src/main.rs — clap command structure and dispatch
-  - src/models.rs — Ticket, TicketSummary, Comment, Member
-  - src/error.rs — OrgaError enum
-  - src/config.rs — AppConfig and loading logic
-  - src/board/mod.rs — Board trait and build_board factory
+  - src/lib.rs — module exports
+  - src/main.rs — clap command tree (init, board, agent, systemd, skill subcommands)
+  - src/error.rs — OrgaError enum, LlmErrorKind classification
+  - src/config.rs — AppConfig, validation, [metrics] and [systemd] sections
+  - src/output.rs — human and JSON output formatting
+  - src/logging.rs — structured Logger
+  - src/models.rs — Ticket, TicketSummary, Comment, CommentCompaction, Member
+  - src/board/mod.rs — Board trait + build_board factory
   - src/board/trello.rs — Trello REST API backend
-  - src/memory.rs — MemoryStore backed by SQLite
+  - src/board/linear.rs — Linear API backend
+  - src/memory/mod.rs — re-exports memory submodules
+  - src/memory/context_repo.rs — git-backed long-term memory + defrag
+  - src/memory/compaction.rs — CompactionStore (SQLite)
+  - src/memory/todo.rs — TodoStore (SQLite, per-scope)
+  - src/memory.rs — legacy MemoryStore (kept for per-ticket notes)
+  - src/agent/mod.rs — RunContext, run_agent, ticket processing
+  - src/agent/loop_runner.rs — run_llm_loop (LLM call site) and TicketProcessingOutcome
+  - src/agent/tools.rs — tool dispatchers and definitions (MAIN_TOOLS, all_tool_definitions,
+    defrag_tool_definitions, dispatch_sleep_tool)
+  - src/agent/context.rs — context assembly for the LLM (today's date, AGENTS.md, etc.)
+  - src/agent/skills.rs — skill discovery and matching for subagents
+  - src/agent/agents.rs — AgentConfig and subagent config types
+  - src/agent/prompts/*.md — per-agent prompt templates
+  - src/metrics.rs — Prometheus recorder and `/metrics` TCP listener
+  - src/init.rs — interactive setup wizards for board and agent configs
+  - src/systemd.rs — systemd unit file generator/installer
+  - src/workspace.rs — workspace path resolution
 
   Conventions:
-  - Use `Result<T, OrgaError>` throughout; no unwrap in production code paths
-  - Human-readable output to stdout, errors to stderr
-  - New backends implement the `Board` trait and are registered in `build_board`
-  - Config validation happens at startup before any command executes
+  - Use `Result<T, OrgaError>` throughout
+  - Human-readable output to stdout, errors to stderr; JSON mode via `--json`
+  - New board backends implement the `Board` trait and register in `build_board`
+  - Config validation runs at startup before any command executes
+  - Public trait methods and dispatch functions are async; metrics calls are sync
+    and behind `Arc<AgentMetrics>`
 
 # Per-artifact rules (optional)
 # rules:
