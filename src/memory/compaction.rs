@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
@@ -16,7 +17,7 @@ pub struct CompactionRecord {
 }
 
 pub struct CompactionStore {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl CompactionStore {
@@ -39,7 +40,9 @@ impl CompactionStore {
                 updated_at        TEXT NOT NULL
             );",
         )?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn set(
@@ -51,7 +54,10 @@ impl CompactionStore {
     ) -> Result<(), OrgaError> {
         let now = chrono::Utc::now().to_rfc3339();
         let through = compacted_through.to_rfc3339();
-        self.conn.execute(
+        let conn = self.conn.lock().map_err(|e| {
+            OrgaError::BackendError(format!("compaction store mutex poisoned: {e}"))
+        })?;
+        conn.execute(
             "INSERT OR REPLACE INTO comment_compaction
              (ticket_id, summary, compacted_through, compacted_count, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -61,7 +67,10 @@ impl CompactionStore {
     }
 
     pub fn get(&self, ticket_id: &str) -> Result<Option<CompactionRecord>, OrgaError> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock().map_err(|e| {
+            OrgaError::BackendError(format!("compaction store mutex poisoned: {e}"))
+        })?;
+        let mut stmt = conn.prepare(
             "SELECT ticket_id, summary, compacted_through, compacted_count, updated_at
              FROM comment_compaction WHERE ticket_id = ?1",
         )?;
@@ -88,7 +97,10 @@ impl CompactionStore {
     }
 
     pub fn delete(&self, ticket_id: &str) -> Result<(), OrgaError> {
-        self.conn.execute(
+        let conn = self.conn.lock().map_err(|e| {
+            OrgaError::BackendError(format!("compaction store mutex poisoned: {e}"))
+        })?;
+        conn.execute(
             "DELETE FROM comment_compaction WHERE ticket_id = ?1",
             params![ticket_id],
         )?;

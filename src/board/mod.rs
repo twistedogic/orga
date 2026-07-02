@@ -10,7 +10,7 @@ pub mod linear;
 pub mod trello;
 
 #[async_trait]
-pub trait Board {
+pub trait Board: Send + Sync {
     async fn list_assigned(&self) -> Result<Vec<TicketSummary>, OrgaError>;
     async fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError>;
     async fn comment(&self, id: &str, text: &str) -> Result<(), OrgaError>;
