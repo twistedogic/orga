@@ -536,9 +536,9 @@ where
     C: CompletionClient,
     C::CompletionModel: CompletionModel + Clone + 'static,
 {
-    let parsed: tools::DispatchArgs = match serde_json::from_str(args) {
+    let parsed: tools::DispatchArgs = match tools::parse_args(args) {
         Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
+        Err(e) => return e,
     };
     if dry_run {
         return format!(
@@ -767,8 +767,6 @@ where
         "[sleep-time] reflecting on ticket {}",
         ticket.summary.id
     ));
-    let model_name = &ctx.llm_cfg.model;
-    let provider = &ctx.llm_cfg.provider;
     let memory_repo_path = ctx.config.memory_repo_path();
 
     let entries = context_repo.list().unwrap_or_default();
@@ -792,39 +790,20 @@ where
             .join("\n---\n")
     );
 
-    let model = client.completion_model(model_name);
-    let sleep_tools = tool_definitions_for(&["memory_list", "memory_read", "memory_write"]);
-
-    let mut history: Vec<Message> = vec![Message::system(system), Message::user(user)];
-
-    let dispatch_metrics = Arc::clone(&ctx.metrics);
-    let sleep_ctx = tools::SleepToolContext {
+    run_reflection_loop(
+        ctx,
+        client,
         context_repo,
-        logger: Arc::clone(&ctx.logger),
-    };
-    let (outcome, _last_text) = loop_runner::run_llm_loop(
-        &model,
-        &mut history,
-        sleep_tools,
-        10,
-        Arc::clone(&ctx.metrics),
-        &loop_runner::LlmLoopLabels {
-            model: model_name,
-            provider,
-            agent: "sleep",
-        },
-        move |name, args, _choices| {
-            let ctx = sleep_ctx.clone();
-            let m = Arc::clone(&dispatch_metrics);
-            async move {
-                tools::dispatch_sleep_tool_recorded(&name, &args, &ctx, &m, "sleep-time").await
-            }
+        ReflectionLoopInputs {
+            system_prompt: system,
+            user_message: user,
+            tool_defs: tool_definitions_for(&["memory_list", "memory_read", "memory_write"]),
+            max_actions: 10,
+            log_label: "sleep-time",
+            agent_label: "sleep",
         },
     )
     .await?;
-
-    ctx.logger
-        .debug(&format!("[sleep-time] loop ended with {:?}", outcome));
 
     // Check thresholds and run defrag if needed
     let fresh_repo = ContextRepository::open(&memory_repo_path, &ctx.config.agent.name)?;
@@ -855,8 +834,6 @@ where
 
     let memory_repo_path = ctx.config.memory_repo_path();
     let agent_name = &ctx.config.agent.name;
-    let model_name = &ctx.llm_cfg.model;
-    let provider = &ctx.llm_cfg.provider;
 
     let repo = ContextRepository::open(&memory_repo_path, agent_name)?;
     let entries = repo.list().unwrap_or_default();
@@ -864,45 +841,105 @@ where
 
     let system = DEFRAG_SYSTEM_PROMPT.replace("{tree}", &tree);
 
-    let model = client.completion_model(model_name);
-    let defrag_tools = tools::defrag_tool_definitions();
+    run_reflection_loop(
+        ctx,
+        client,
+        repo,
+        ReflectionLoopInputs {
+            system_prompt: system,
+            user_message: "Please clean up the context repository now.".to_string(),
+            tool_defs: tools::defrag_tool_definitions(),
+            max_actions: 20,
+            log_label: "defrag",
+            agent_label: "defrag",
+        },
+    )
+    .await?;
 
-    let mut history: Vec<Message> = vec![
-        Message::system(system),
-        Message::user("Please clean up the context repository now.".to_string()),
-    ];
+    ctx.logger.info("[defrag] defragmentation complete");
+    Ok(())
+}
+
+/// Run the shared reflection loop used by both the sleep-time agent and the
+/// defrag agent. Centralises the model construction, history setup, sleep-tool
+/// dispatch closure (which routes through `dispatch_sleep_tool_recorded`),
+/// metrics wiring, and post-loop debug log that both agents used to write
+/// inline. The two callers differ only in the inputs collected in
+/// [`ReflectionLoopInputs`] — system prompt, user message, tool definitions,
+/// action cap, and the log/agent labels — which travel as one named payload
+/// to keep this helper's argument count manageable.
+async fn run_reflection_loop<C>(
+    ctx: &RunContext<'_>,
+    client: &C,
+    context_repo: ContextRepository,
+    inputs: ReflectionLoopInputs<'_>,
+) -> Result<loop_runner::LoopOutcome, OrgaError>
+where
+    C: CompletionClient + Sync,
+    C::CompletionModel: CompletionModel + Clone + 'static,
+{
+    let model_name = &ctx.llm_cfg.model;
+    let provider = &ctx.llm_cfg.provider;
+    let model = client.completion_model(model_name);
+
+    let ReflectionLoopInputs {
+        system_prompt,
+        user_message,
+        tool_defs,
+        max_actions,
+        log_label,
+        agent_label,
+    } = inputs;
+
+    let mut history: Vec<Message> =
+        vec![Message::system(system_prompt), Message::user(user_message)];
 
     let dispatch_metrics = Arc::clone(&ctx.metrics);
     let sleep_ctx = tools::SleepToolContext {
-        context_repo: repo,
+        context_repo,
         logger: Arc::clone(&ctx.logger),
     };
     let (outcome, _last_text) =
         loop_runner::run_llm_loop(
             &model,
             &mut history,
-            defrag_tools,
-            20,
+            tool_defs,
+            max_actions,
             Arc::clone(&ctx.metrics),
             &loop_runner::LlmLoopLabels {
                 model: model_name,
                 provider,
-                agent: "defrag",
+                agent: agent_label,
             },
             move |name, args, _choices| {
                 let ctx = sleep_ctx.clone();
                 let m = Arc::clone(&dispatch_metrics);
                 async move {
-                    tools::dispatch_sleep_tool_recorded(&name, &args, &ctx, &m, "defrag").await
+                    tools::dispatch_sleep_tool_recorded(&name, &args, &ctx, &m, log_label).await
                 }
             },
         )
         .await?;
 
     ctx.logger
-        .debug(&format!("[defrag] loop ended with {:?}", outcome));
-    ctx.logger.info("[defrag] defragmentation complete");
-    Ok(())
+        .debug(&format!("[{log_label}] loop ended with {:?}", outcome));
+    Ok(outcome)
+}
+
+/// Loop inputs for [`run_reflection_loop`]. Bundles the system prompt, user
+/// message, tool definitions, action cap, and labels (log + agent) into a
+/// single named payload so the helper itself stays under the
+/// `too_many_arguments` clippy threshold.
+struct ReflectionLoopInputs<'a> {
+    system_prompt: String,
+    user_message: String,
+    tool_defs: Vec<rig_core::completion::ToolDefinition>,
+    max_actions: usize,
+    /// Per-call debug log prefix and `dispatch_sleep_tool_recorded` label,
+    /// e.g. "sleep-time" or "defrag".
+    log_label: &'a str,
+    /// `LlmLoopLabels` agent tag, e.g. "sleep" or "defrag".
+    agent_label: &'a str,
 }
 
 #[cfg(test)]

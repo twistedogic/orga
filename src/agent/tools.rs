@@ -28,7 +28,7 @@ fn dry_run_msg(action: &str) -> String {
 /// Parse tool arguments from JSON, returning the uniform `error: invalid args: ...`
 /// string every dispatch function previously constructed by hand. The match-and-return
 /// pattern at each call site still returns the error to short-circuit cleanly.
-fn parse_args<T: serde::de::DeserializeOwned>(args: &str) -> Result<T, String> {
+pub(crate) fn parse_args<T: serde::de::DeserializeOwned>(args: &str) -> Result<T, String> {
     serde_json::from_str(args).map_err(|e| format!("error: invalid args: {e}"))
 }
 
