@@ -195,7 +195,7 @@ mod tests {
         let ws = store(&tmp);
         let root = tmp.path().join("T-1");
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("bin.dat"), &[0u8, 159u8, 146u8, 150u8]).unwrap();
+        std::fs::write(root.join("bin.dat"), [0u8, 159u8, 146u8, 150u8]).unwrap();
         let err = ws.read("T-1", "bin.dat").unwrap_err();
         assert!(err.to_string().contains("binary content"), "got: {err}");
     }

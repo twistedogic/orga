@@ -20,6 +20,15 @@ pub enum LoopOutcome {
     Terminal,
 }
 
+/// Metric labels for LLM calls inside a single loop run. Grouped so that the
+/// trio (`model`, `provider`, `agent`) travels as one named payload.
+#[derive(Debug, Clone, Copy)]
+pub struct LlmLoopLabels<'a> {
+    pub model: &'a str,
+    pub provider: &'a str,
+    pub agent: &'a str,
+}
+
 pub fn make_completion_request(
     history: &[Message],
     tools: Vec<ToolDefinition>,
@@ -57,9 +66,7 @@ pub async fn run_llm_loop<M, F, Fut>(
     tools: Vec<ToolDefinition>,
     max_steps: usize,
     metrics: Arc<AgentMetrics>,
-    model_label: &str,
-    provider: &str,
-    agent: &str,
+    labels: &LlmLoopLabels<'_>,
     mut dispatch: F,
 ) -> Result<(LoopOutcome, String), OrgaError>
 where
@@ -67,6 +74,11 @@ where
     F: FnMut(String, String, &[AssistantContent]) -> Fut,
     Fut: Future<Output = (String, bool)>,
 {
+    let LlmLoopLabels {
+        model: model_label,
+        provider,
+        agent,
+    } = *labels;
     let mut last_text = String::new();
     let mut step = 0usize;
     loop {

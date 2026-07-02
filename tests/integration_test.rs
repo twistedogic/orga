@@ -1,11 +1,8 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use chrono::Utc;
 
 use orga::board::Board;
 use orga::error::OrgaError;
-use orga::logging::Logger;
 use orga::models::{Column, Comment, Member, Ticket, TicketSummary};
 
 struct MockBoard {

@@ -415,9 +415,11 @@ where
         tools,
         max_actions,
         Arc::clone(&ctx.metrics),
-        &ctx.llm_cfg.model,
-        &ctx.llm_cfg.provider,
-        "main",
+        &loop_runner::LlmLoopLabels {
+            model: &ctx.llm_cfg.model,
+            provider: &ctx.llm_cfg.provider,
+            agent: "main",
+        },
         move |name, args, _choices| {
             let logger = Arc::clone(&dispatch_logger);
             let ctx = Arc::clone(&dispatch_tool_ctx);
@@ -688,9 +690,11 @@ where
         tools,
         max_actions,
         Arc::clone(&metrics),
-        model_name,
-        &sub_provider,
-        &subagent_name,
+        &loop_runner::LlmLoopLabels {
+            model: model_name,
+            provider: &sub_provider,
+            agent: &subagent_name,
+        },
         move |name, args, _choices| {
             let logger = Arc::clone(&dispatch_logger);
             let ctx = Arc::clone(&dispatch_tool_ctx);
@@ -806,9 +810,11 @@ where
         sleep_tools,
         10,
         Arc::clone(&ctx.metrics),
-        model_name,
-        provider,
-        "sleep",
+        &loop_runner::LlmLoopLabels {
+            model: model_name,
+            provider,
+            agent: "sleep",
+        },
         move |name, args, _choices| {
             let logger = Arc::clone(&dispatch_logger);
             let repo_clone = context_repo.clone();
@@ -899,9 +905,11 @@ where
         defrag_tools,
         20,
         Arc::clone(&ctx.metrics),
-        model_name,
-        provider,
-        "defrag",
+        &loop_runner::LlmLoopLabels {
+            model: model_name,
+            provider,
+            agent: "defrag",
+        },
         move |name, args, _choices| {
             let logger = Arc::clone(&dispatch_logger);
             let repo_clone = repo.clone();
