@@ -24,6 +24,13 @@ fn dry_run_msg(action: &str) -> String {
     format!("[dry-run] {} would have been executed", action)
 }
 
+/// Parse tool arguments from JSON, returning the uniform `error: invalid args: ...`
+/// string every dispatch function previously constructed by hand. The match-and-return
+/// pattern at each call site still returns the error to short-circuit cleanly.
+fn parse_args<T: serde::de::DeserializeOwned>(args: &str) -> Result<T, String> {
+    serde_json::from_str(args).map_err(|e| format!("error: invalid args: {e}"))
+}
+
 macro_rules! log_action {
     ($ctx:expr, $dry_run:expr, $msg:expr) => {
         if $dry_run {
@@ -82,9 +89,9 @@ struct CommentArgs {
 }
 
 async fn dispatch_comment(args: &str, ctx: &ToolContext) -> String {
-    let parsed: CommentArgs = match serde_json::from_str(args) {
+    let parsed: CommentArgs = match parse_args(args) {
         Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
+        Err(e) => return e,
     };
     log_action!(
         ctx,
@@ -108,9 +115,9 @@ struct CreateSubArgs {
 }
 
 async fn dispatch_create_sub(args: &str, ctx: &ToolContext) -> String {
-    let parsed: CreateSubArgs = match serde_json::from_str(args) {
+    let parsed: CreateSubArgs = match parse_args(args) {
         Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
+        Err(e) => return e,
     };
     log_action!(
         ctx,
@@ -168,9 +175,9 @@ async fn dispatch_memory_list(ctx: &ToolContext) -> String {
 }
 
 async fn dispatch_memory_read(args: &str, ctx: &ToolContext) -> String {
-    let parsed: MemoryReadArgs = match serde_json::from_str(args) {
+    let parsed: MemoryReadArgs = match parse_args(args) {
         Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
+        Err(e) => return e,
     };
     match ctx.context_repo.read(&parsed.path) {
         Ok(content) => content,
@@ -186,9 +193,9 @@ struct MemoryWriteArgs {
 }
 
 async fn dispatch_memory_write(args: &str, ctx: &ToolContext) -> String {
-    let parsed: MemoryWriteArgs = match serde_json::from_str(args) {
+    let parsed: MemoryWriteArgs = match parse_args(args) {
         Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
+        Err(e) => return e,
     };
     log_action!(ctx, ctx.dry_run, format!("memory_write {}", parsed.path));
     if ctx.dry_run {
@@ -209,9 +216,9 @@ struct MemorySearchArgs {
 }
 
 async fn dispatch_memory_search(args: &str, ctx: &ToolContext) -> String {
-    let parsed: MemorySearchArgs = match serde_json::from_str(args) {
+    let parsed: MemorySearchArgs = match parse_args(args) {
         Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
+        Err(e) => return e,
     };
     match ctx.context_repo.search(&parsed.query) {
         Ok(results) if results.is_empty() => "(no matches)".to_string(),
@@ -230,9 +237,9 @@ struct CompactArgs {
 }
 
 async fn dispatch_compact(args: &str, ctx: &ToolContext) -> String {
-    let parsed: CompactArgs = match serde_json::from_str(args) {
+    let parsed: CompactArgs = match parse_args(args) {
         Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
+        Err(e) => return e,
     };
     log_action!(
         ctx,
@@ -304,9 +311,9 @@ fn todos_scope_key(scope: &str) -> String {
 }
 
 async fn dispatch_todos(args: &str, ctx: &ToolContext) -> String {
-    let parsed: TodosArgs = match serde_json::from_str(args) {
+    let parsed: TodosArgs = match parse_args(args) {
         Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
+        Err(e) => return e,
     };
 
     for item in &parsed.todos {
@@ -544,9 +551,9 @@ struct BashArgs {
 }
 
 async fn dispatch_bash(args: &str, ctx: &ToolContext) -> String {
-    let parsed: BashArgs = match serde_json::from_str(args) {
+    let parsed: BashArgs = match parse_args(args) {
         Ok(a) => a,
-        Err(e) => return format!("error: invalid args: {e}"),
+        Err(e) => return e,
     };
     let ws = match &ctx.workspace {
         Some(w) => w,
@@ -603,9 +610,9 @@ pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolCon
             Err(e) => format!("error: {e}"),
         },
         "memory_read" => {
-            let parsed: MemoryReadArgs = match serde_json::from_str(args) {
+            let parsed: MemoryReadArgs = match parse_args(args) {
                 Ok(a) => a,
-                Err(e) => return format!("error: invalid args: {e}"),
+                Err(e) => return e,
             };
             match ctx.context_repo.read(&parsed.path) {
                 Ok(content) => content,
@@ -613,9 +620,9 @@ pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolCon
             }
         }
         "memory_write" => {
-            let parsed: MemoryWriteArgs = match serde_json::from_str(args) {
+            let parsed: MemoryWriteArgs = match parse_args(args) {
                 Ok(a) => a,
-                Err(e) => return format!("error: invalid args: {e}"),
+                Err(e) => return e,
             };
             ctx.logger
                 .info(&format!("[sleep-tool] memory_write {}", parsed.path));
@@ -628,9 +635,9 @@ pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolCon
             }
         }
         "memory_delete" => {
-            let parsed: MemoryReadArgs = match serde_json::from_str(args) {
+            let parsed: MemoryReadArgs = match parse_args(args) {
                 Ok(a) => a,
-                Err(e) => return format!("error: invalid args: {e}"),
+                Err(e) => return e,
             };
             ctx.logger
                 .info(&format!("[sleep-tool] memory_delete {}", parsed.path));
