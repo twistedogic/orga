@@ -31,6 +31,19 @@ fn parse_args<T: serde::de::DeserializeOwned>(args: &str) -> Result<T, String> {
     serde_json::from_str(args).map_err(|e| format!("error: invalid args: {e}"))
 }
 
+/// Render a `Result` as a tool response: convert the success value via `ok`,
+/// or return `format!("error: {e}")` on error. Centralizes the `Err(e) => format!("error: {e}")`
+/// half of the `match` every dispatch function used to write by hand.
+fn tool_response<T, E: std::fmt::Display>(
+    result: Result<T, E>,
+    ok: impl FnOnce(T) -> String,
+) -> String {
+    match result {
+        Ok(v) => ok(v),
+        Err(e) => format!("error: {e}"),
+    }
+}
+
 macro_rules! log_action {
     ($ctx:expr, $dry_run:expr, $msg:expr) => {
         if $dry_run {
@@ -101,10 +114,10 @@ async fn dispatch_comment(args: &str, ctx: &ToolContext) -> String {
     if ctx.dry_run {
         return dry_run_msg(&format!("comment on {}", ctx.ticket_id));
     }
-    match ctx.board.comment(&ctx.ticket_id, &parsed.text).await {
-        Ok(()) => "comment posted".to_string(),
-        Err(e) => format!("error: {e}"),
-    }
+    tool_response(
+        ctx.board.comment(&ctx.ticket_id, &parsed.text).await,
+        |()| "comment posted".to_string(),
+    )
 }
 
 #[derive(Deserialize)]
@@ -133,22 +146,22 @@ async fn dispatch_create_sub(args: &str, ctx: &ToolContext) -> String {
             parsed.title, ctx.ticket_id
         ));
     }
-    match ctx
-        .board
-        .create_sub(
-            &ctx.ticket_id,
-            &parsed.title,
-            parsed.description.as_deref(),
-            parsed.list.as_deref(),
-        )
-        .await
-    {
-        Ok(sub) => format!(
-            "created sub-ticket: {} ({})",
-            sub.summary.title, sub.summary.url
-        ),
-        Err(e) => format!("error: {e}"),
-    }
+    tool_response(
+        ctx.board
+            .create_sub(
+                &ctx.ticket_id,
+                &parsed.title,
+                parsed.description.as_deref(),
+                parsed.list.as_deref(),
+            )
+            .await,
+        |sub| {
+            format!(
+                "created sub-ticket: {} ({})",
+                sub.summary.title, sub.summary.url
+            )
+        },
+    )
 }
 
 #[derive(Deserialize)]
@@ -157,21 +170,23 @@ struct MemoryReadArgs {
 }
 
 async fn dispatch_memory_list(ctx: &ToolContext) -> String {
-    match ctx.context_repo.list() {
-        Ok(entries) if entries.is_empty() => "(empty repository — no memory files yet)".to_string(),
-        Ok(entries) => entries
-            .iter()
-            .map(|e| {
-                if e.description.is_empty() {
-                    e.path.clone()
-                } else {
-                    format!("{} — {}", e.path, e.description)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Err(e) => format!("error: {e}"),
-    }
+    tool_response(ctx.context_repo.list(), |entries| {
+        if entries.is_empty() {
+            "(empty repository — no memory files yet)".to_string()
+        } else {
+            entries
+                .iter()
+                .map(|e| {
+                    if e.description.is_empty() {
+                        e.path.clone()
+                    } else {
+                        format!("{} — {}", e.path, e.description)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    })
 }
 
 async fn dispatch_memory_read(args: &str, ctx: &ToolContext) -> String {
@@ -179,10 +194,7 @@ async fn dispatch_memory_read(args: &str, ctx: &ToolContext) -> String {
         Ok(a) => a,
         Err(e) => return e,
     };
-    match ctx.context_repo.read(&parsed.path) {
-        Ok(content) => content,
-        Err(e) => format!("error: {e}"),
-    }
+    tool_response(ctx.context_repo.read(&parsed.path), |content| content)
 }
 
 #[derive(Deserialize)]
@@ -201,13 +213,11 @@ async fn dispatch_memory_write(args: &str, ctx: &ToolContext) -> String {
     if ctx.dry_run {
         return dry_run_msg(&format!("memory_write {}", parsed.path));
     }
-    match ctx
-        .context_repo
-        .write(&parsed.path, &parsed.content, &parsed.commit_msg)
-    {
-        Ok(()) => format!("written: {}", parsed.path),
-        Err(e) => format!("error: {e}"),
-    }
+    tool_response(
+        ctx.context_repo
+            .write(&parsed.path, &parsed.content, &parsed.commit_msg),
+        |()| format!("written: {}", parsed.path),
+    )
 }
 
 #[derive(Deserialize)]
@@ -220,15 +230,17 @@ async fn dispatch_memory_search(args: &str, ctx: &ToolContext) -> String {
         Ok(a) => a,
         Err(e) => return e,
     };
-    match ctx.context_repo.search(&parsed.query) {
-        Ok(results) if results.is_empty() => "(no matches)".to_string(),
-        Ok(results) => results
-            .iter()
-            .map(|(path, line_no, line)| format!("{}:{}: {}", path, line_no, line))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Err(e) => format!("error: {e}"),
-    }
+    tool_response(ctx.context_repo.search(&parsed.query), |results| {
+        if results.is_empty() {
+            "(no matches)".to_string()
+        } else {
+            results
+                .iter()
+                .map(|(path, line_no, line)| format!("{}:{}: {}", path, line_no, line))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    })
 }
 
 #[derive(Deserialize)]
@@ -250,13 +262,11 @@ async fn dispatch_compact(args: &str, ctx: &ToolContext) -> String {
         return dry_run_msg(&format!("compact comments for {}", ctx.ticket_id));
     }
     let boundary = chrono::Utc::now();
-    match ctx
-        .compaction_store
-        .set(&ctx.ticket_id, &parsed.summary, boundary, 0)
-    {
-        Ok(()) => "compaction stored".to_string(),
-        Err(e) => format!("error: {e}"),
-    }
+    tool_response(
+        ctx.compaction_store
+            .set(&ctx.ticket_id, &parsed.summary, boundary, 0),
+        |()| "compaction stored".to_string(),
+    )
 }
 
 #[derive(Deserialize)]
@@ -274,14 +284,12 @@ async fn dispatch_done(args: &str, ctx: &ToolContext) -> String {
     if ctx.dry_run {
         return dry_run_msg(&format!("return ticket {} to creator", ctx.ticket_id));
     }
-    match ctx
-        .board
-        .return_ticket(&ctx.ticket_id, parsed.comment.as_deref())
-        .await
-    {
-        Ok(()) => "ticket returned to creator".to_string(),
-        Err(e) => format!("error: {e}"),
-    }
+    tool_response(
+        ctx.board
+            .return_ticket(&ctx.ticket_id, parsed.comment.as_deref())
+            .await,
+        |()| "ticket returned to creator".to_string(),
+    )
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -378,10 +386,11 @@ pub struct DispatchArgs {
 }
 
 async fn dispatch_return(args: &str) -> String {
-    match serde_json::from_str::<ReturnArgs>(args) {
-        Ok(parsed) => parsed.result,
-        Err(e) => format!("error: invalid args: {e}"),
-    }
+    let parsed: ReturnArgs = match parse_args(args) {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    parsed.result
 }
 
 pub fn all_tool_definitions() -> Vec<ToolDefinition> {
@@ -594,30 +603,29 @@ pub struct SleepToolContext {
 
 pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolContext) -> String {
     match tool_name {
-        "memory_list" => match ctx.context_repo.list() {
-            Ok(entries) if entries.is_empty() => "(empty repository)".to_string(),
-            Ok(entries) => entries
-                .iter()
-                .map(|e| {
-                    if e.description.is_empty() {
-                        e.path.clone()
-                    } else {
-                        format!("{} — {}", e.path, e.description)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-            Err(e) => format!("error: {e}"),
-        },
+        "memory_list" => tool_response(ctx.context_repo.list(), |entries| {
+            if entries.is_empty() {
+                "(empty repository)".to_string()
+            } else {
+                entries
+                    .iter()
+                    .map(|e| {
+                        if e.description.is_empty() {
+                            e.path.clone()
+                        } else {
+                            format!("{} — {}", e.path, e.description)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }),
         "memory_read" => {
             let parsed: MemoryReadArgs = match parse_args(args) {
                 Ok(a) => a,
                 Err(e) => return e,
             };
-            match ctx.context_repo.read(&parsed.path) {
-                Ok(content) => content,
-                Err(e) => format!("error: {e}"),
-            }
+            tool_response(ctx.context_repo.read(&parsed.path), |content| content)
         }
         "memory_write" => {
             let parsed: MemoryWriteArgs = match parse_args(args) {
@@ -626,13 +634,11 @@ pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolCon
             };
             ctx.logger
                 .info(&format!("[sleep-tool] memory_write {}", parsed.path));
-            match ctx
-                .context_repo
-                .write(&parsed.path, &parsed.content, &parsed.commit_msg)
-            {
-                Ok(()) => format!("written: {}", parsed.path),
-                Err(e) => format!("error: {e}"),
-            }
+            tool_response(
+                ctx.context_repo
+                    .write(&parsed.path, &parsed.content, &parsed.commit_msg),
+                |()| format!("written: {}", parsed.path),
+            )
         }
         "memory_delete" => {
             let parsed: MemoryReadArgs = match parse_args(args) {
@@ -641,10 +647,9 @@ pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolCon
             };
             ctx.logger
                 .info(&format!("[sleep-tool] memory_delete {}", parsed.path));
-            match ctx.context_repo.delete(&parsed.path) {
-                Ok(()) => format!("deleted: {}", parsed.path),
-                Err(e) => format!("error: {e}"),
-            }
+            tool_response(ctx.context_repo.delete(&parsed.path), |()| {
+                format!("deleted: {}", parsed.path)
+            })
         }
         other => format!("error: unknown sleep tool '{other}'"),
     }
