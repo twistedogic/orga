@@ -11,9 +11,12 @@ pub struct ContextEntry {
 }
 
 impl ContextEntry {
-    /// Single-line representation used by every caller that lists the repo:
+    /// Single-line representation shared by every caller that lists the repo:
     /// `path` alone when the entry has no frontmatter description, otherwise
-    /// `path — description`. Centralized so the format only has one source of truth.
+    /// `path — description`. The bullet-prefixed variant in the system
+    /// prompt and the bare variant in `MemoryCommands::List` both delegate
+    /// here, so the separator and empty-description fallback live in one
+    /// place.
     pub fn format_line(&self) -> String {
         if self.description.is_empty() {
             self.path.clone()

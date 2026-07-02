@@ -155,11 +155,7 @@ fn build_context_repo_section(context_repo: &ContextRepository) -> String {
         section.push_str("\n*(empty — no memory files yet)*");
     } else {
         for entry in &entries {
-            if entry.description.is_empty() {
-                section.push_str(&format!("\n- {}", entry.path));
-            } else {
-                section.push_str(&format!("\n- {} — {}", entry.path, entry.description));
-            }
+            section.push_str(&format!("\n- {}", entry.format_line()));
         }
     }
 

@@ -442,11 +442,7 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                         println!("{}", serde_json::to_string_pretty(&arr).unwrap());
                     } else {
                         for e in &entries {
-                            if e.description.is_empty() {
-                                println!("{}", e.path);
-                            } else {
-                                println!("{} — {}", e.path, e.description);
-                            }
+                            println!("{}", e.format_line());
                         }
                     }
                 }
