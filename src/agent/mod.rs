@@ -163,6 +163,16 @@ pub struct RunContext<'a> {
     pub llm_cfg: &'a LlmConfig,
 }
 
+/// Infrastructure passed to `run_subagent_loop` from the dispatch tool callback.
+/// Mirrors `RunContext` but without `llm_cfg` — the subagent derives its own
+/// from `config.llm_config()` because it can override model/max_actions per-subagent.
+pub struct SubagentDeps<'a> {
+    pub config: &'a AppConfig,
+    pub logger: Arc<Logger>,
+    pub metrics: Arc<AgentMetrics>,
+    pub dry_run: bool,
+}
+
 pub async fn run_agent(
     once: bool,
     dry_run: bool,
@@ -547,17 +557,13 @@ where
             );
         }
     };
-    run_subagent_loop(
-        client,
-        sub_cfg,
-        ticket,
-        &parsed.task,
-        dry_run,
+    let sub_deps = SubagentDeps {
         config,
-        logger,
-        Arc::clone(&metrics),
-    )
-    .await
+        logger: Arc::clone(&logger),
+        metrics: Arc::clone(&metrics),
+        dry_run,
+    };
+    run_subagent_loop(client, sub_cfg, ticket, &parsed.task, &sub_deps).await
 }
 
 async fn run_subagent_loop<C>(
@@ -565,15 +571,16 @@ async fn run_subagent_loop<C>(
     sub_cfg: &crate::config::SubagentConfig,
     ticket: &crate::models::Ticket,
     task: &str,
-    dry_run: bool,
-    config: &AppConfig,
-    logger: Arc<Logger>,
-    metrics: Arc<AgentMetrics>,
+    deps: &SubagentDeps<'_>,
 ) -> String
 where
     C: CompletionClient,
     C::CompletionModel: CompletionModel + Clone + 'static,
 {
+    let config = deps.config;
+    let logger = &deps.logger;
+    let metrics = &deps.metrics;
+    let dry_run = deps.dry_run;
     let llm_cfg = match config.llm_config() {
         Ok(c) => c,
         Err(e) => return format!("error: {e}"),
@@ -588,11 +595,11 @@ where
     // Build skill context for subagent
     let all_skills = config
         .skills_path()
-        .map(|path| scan_skills(&path, &logger))
+        .map(|path| scan_skills(&path, logger))
         .unwrap_or_default();
     let skill_ctx = if !all_skills.is_empty() {
         let active: Vec<&SkillMeta> = if sub_cfg.skills.is_empty() {
-            match_skills(&all_skills, &ticket.summary, &logger)
+            match_skills(&all_skills, &ticket.summary, logger)
         } else {
             all_skills
                 .iter()
@@ -652,7 +659,7 @@ where
     ];
 
     // Open board, compaction store, todo store, and workspace once before the loop.
-    let tool_board = match build_board(config, Arc::clone(&logger)).await {
+    let tool_board = match build_board(config, Arc::clone(logger)).await {
         Ok(b) => b,
         Err(e) => return format!("error building board: {e}"),
     };
@@ -673,15 +680,15 @@ where
         todo_store: tool_todos,
         context_repo: context_repo.clone(),
         dry_run,
-        logger: Arc::clone(&logger),
+        logger: Arc::clone(logger),
         workspace: config.workspace_base_path().map(WorkspaceStore::new),
     };
     let tool_ctx = Arc::new(tool_ctx);
 
     let subagent_name = sub_cfg.name.clone();
-    let dispatch_logger = Arc::clone(&logger);
+    let dispatch_logger = Arc::clone(logger);
     let dispatch_tool_ctx = Arc::clone(&tool_ctx);
-    let dispatch_metrics = Arc::clone(&metrics);
+    let dispatch_metrics = Arc::clone(metrics);
     let dispatch_subagent_name = subagent_name.clone();
     let sub_provider = llm_cfg.provider.clone();
     let (outcome, last_text) = loop_runner::run_llm_loop(
@@ -689,7 +696,7 @@ where
         &mut history,
         tools,
         max_actions,
-        Arc::clone(&metrics),
+        Arc::clone(metrics),
         &loop_runner::LlmLoopLabels {
             model: model_name,
             provider: &sub_provider,
