@@ -589,6 +589,31 @@ pub struct SleepToolContext {
     pub logger: Arc<Logger>,
 }
 
+/// Classify a tool result, record the metric, and emit the standard
+/// `{prefix} tool '{name}' result={result}` debug log line. Centralises the
+/// 4-line classify + record + log block that every dispatch closure (main,
+/// subagent, sleep) used to write by hand. The classification rule is
+/// uniform: results starting with `error:` count as `ToolOutcome::Error`,
+/// everything else as `ToolOutcome::Ok`. The caller builds `prefix` (e.g.
+/// `[agent] ticket T-1:`, `[subagent:foo]`, `[sleep-time]`) — only the prefix
+/// text varies between loops.
+pub(crate) fn record_tool_call_and_debug(
+    name: &str,
+    result: &str,
+    metrics: &AgentMetrics,
+    scope: ToolScope,
+    logger: &Logger,
+    prefix: &str,
+) {
+    let outcome = if result.starts_with("error:") {
+        ToolOutcome::Error
+    } else {
+        ToolOutcome::Ok
+    };
+    metrics.record_tool_call(name, scope, outcome);
+    logger.debug(&format!("{prefix} tool '{name}' result={result}"));
+}
+
 /// Dispatch a sleep-time tool, record the `ToolScope::Sleep` metric, and emit
 /// a per-call debug log under `log_label` (e.g. "sleep-time" or "defrag").
 /// Returns `(result, is_terminal = false)` — neither sleep-time nor defrag
@@ -604,14 +629,14 @@ pub async fn dispatch_sleep_tool_recorded(
     log_label: &str,
 ) -> (String, bool) {
     let result = dispatch_sleep_tool(tool_name, args, ctx).await;
-    let outcome = if result.starts_with("error:") {
-        ToolOutcome::Error
-    } else {
-        ToolOutcome::Ok
-    };
-    metrics.record_tool_call(tool_name, ToolScope::Sleep, outcome);
-    ctx.logger
-        .debug(&format!("[{log_label}] tool '{tool_name}' result={result}"));
+    record_tool_call_and_debug(
+        tool_name,
+        &result,
+        metrics,
+        ToolScope::Sleep,
+        &ctx.logger,
+        &format!("[{log_label}]"),
+    );
     (result, false)
 }
 
@@ -1025,5 +1050,80 @@ mod tests {
     fn memory_delete_in_defrag_tool_definitions() {
         let defs = defrag_tool_definitions();
         assert!(defs.iter().any(|d| d.name == "memory_delete"));
+    }
+
+    #[test]
+    fn record_tool_call_and_debug_records_error_for_error_prefix() {
+        let metrics = AgentMetrics::new();
+        let logger = Arc::new(crate::logging::Logger::new(
+            &PathBuf::from("/dev/null"),
+            false,
+        ));
+        record_tool_call_and_debug(
+            "comment",
+            "error: bad input",
+            &metrics,
+            ToolScope::Main,
+            &logger,
+            "[agent] ticket T-1:",
+        );
+        assert_eq!(
+            metrics
+                .tool_calls
+                .with_label_values(&["comment", "main", "error"])
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .tool_calls
+                .with_label_values(&["comment", "main", "ok"])
+                .get(),
+            0
+        );
+    }
+
+    #[test]
+    fn record_tool_call_and_debug_records_ok_for_non_error_result() {
+        let metrics = AgentMetrics::new();
+        let logger = Arc::new(crate::logging::Logger::new(
+            &PathBuf::from("/dev/null"),
+            false,
+        ));
+        record_tool_call_and_debug(
+            "memory_read",
+            "file contents",
+            &metrics,
+            ToolScope::Subagent,
+            &logger,
+            "[subagent:foo]",
+        );
+        assert_eq!(
+            metrics
+                .tool_calls
+                .with_label_values(&["memory_read", "subagent", "ok"])
+                .get(),
+            1
+        );
+    }
+
+    #[test]
+    fn record_tool_call_and_debug_emits_prefixed_debug_log() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let logger = Arc::new(crate::logging::Logger::new(f.path(), true));
+        let metrics = AgentMetrics::new();
+        record_tool_call_and_debug(
+            "comment",
+            "ok",
+            &metrics,
+            ToolScope::Sleep,
+            &logger,
+            "[sleep-time]",
+        );
+        let body = std::fs::read_to_string(f.path()).unwrap();
+        assert!(
+            body.contains("DEBUG [sleep-time] tool 'comment' result=ok"),
+            "expected debug log with prefix; got: {body}"
+        );
     }
 }

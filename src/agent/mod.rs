@@ -19,7 +19,7 @@ use crate::config::{AppConfig, LlmConfig};
 use crate::error::OrgaError;
 use crate::logging::Logger;
 use crate::memory::{CompactionStore, ContextRepository, TodoStore, format_tree_index};
-use crate::metrics::{AgentMetrics, TicketOutcome, ToolOutcome, ToolScope};
+use crate::metrics::{AgentMetrics, TicketOutcome, ToolScope};
 use crate::workspace::WorkspaceStore;
 
 use config::{LlmClient, build_llm_client};
@@ -461,15 +461,14 @@ where
                 } else {
                     dispatch(&name_str, &args, &ctx).await
                 };
-                let call_outcome = if result.starts_with("error:") {
-                    ToolOutcome::Error
-                } else {
-                    ToolOutcome::Ok
-                };
-                m.record_tool_call(&name_str, ToolScope::Main, call_outcome);
-                logger.debug(&format!(
-                    "[agent] ticket {ticket_id}: tool '{name_str}' result={result}"
-                ));
+                tools::record_tool_call_and_debug(
+                    &name_str,
+                    &result,
+                    &m,
+                    ToolScope::Main,
+                    &logger,
+                    &format!("[agent] ticket {ticket_id}:"),
+                );
                 if is_terminal {
                     logger.info(&format!(
                         "[agent] ticket {ticket_id}: terminal tool called, ending cycle"
@@ -713,15 +712,14 @@ where
                     "[subagent:{sub_name}] calling tool '{name}' args={args}"
                 ));
                 let result = dispatch(&name, &args, &ctx).await;
-                let call_outcome = if result.starts_with("error:") {
-                    ToolOutcome::Error
-                } else {
-                    ToolOutcome::Ok
-                };
-                m.record_tool_call(&name, ToolScope::Subagent, call_outcome);
-                logger.debug(&format!(
-                    "[subagent:{sub_name}] tool '{name}' result={result}"
-                ));
+                tools::record_tool_call_and_debug(
+                    &name,
+                    &result,
+                    &m,
+                    ToolScope::Subagent,
+                    &logger,
+                    &format!("[subagent:{sub_name}]"),
+                );
                 (result, is_return)
             }
         },
