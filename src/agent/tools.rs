@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::board::Board;
 use crate::logging::Logger;
 use crate::memory::{CompactionStore, ContextRepository, TodoStore, format_tree_index};
+use crate::metrics::{AgentMetrics, ToolOutcome, ToolScope};
 use crate::workspace::WorkspaceStore;
 
 pub struct ToolContext {
@@ -582,9 +583,36 @@ async fn dispatch_bash(args: &str, ctx: &ToolContext) -> String {
 // Sleep-time tool context — minimal context for reflection/defrag agents
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct SleepToolContext {
     pub context_repo: ContextRepository,
     pub logger: Arc<Logger>,
+}
+
+/// Dispatch a sleep-time tool, record the `ToolScope::Sleep` metric, and emit
+/// a per-call debug log under `log_label` (e.g. "sleep-time" or "defrag").
+/// Returns `(result, is_terminal = false)` — neither sleep-time nor defrag
+/// loops recognise an end-of-cycle tool, so the loop closure always
+/// continues. Centralises the four-line `if result.starts_with("error:") …
+/// record_tool_call + logger.debug` post-processing that both reflection loops
+/// used to write inline.
+pub async fn dispatch_sleep_tool_recorded(
+    tool_name: &str,
+    args: &str,
+    ctx: &SleepToolContext,
+    metrics: &AgentMetrics,
+    log_label: &str,
+) -> (String, bool) {
+    let result = dispatch_sleep_tool(tool_name, args, ctx).await;
+    let outcome = if result.starts_with("error:") {
+        ToolOutcome::Error
+    } else {
+        ToolOutcome::Ok
+    };
+    metrics.record_tool_call(tool_name, ToolScope::Sleep, outcome);
+    ctx.logger
+        .debug(&format!("[{log_label}] tool '{tool_name}' result={result}"));
+    (result, false)
 }
 
 pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolContext) -> String {

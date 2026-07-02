@@ -799,8 +799,11 @@ where
 
     let mut history: Vec<Message> = vec![Message::system(system), Message::user(user)];
 
-    let dispatch_logger = Arc::clone(&ctx.logger);
     let dispatch_metrics = Arc::clone(&ctx.metrics);
+    let sleep_ctx = tools::SleepToolContext {
+        context_repo,
+        logger: Arc::clone(&ctx.logger),
+    };
     let (outcome, _last_text) = loop_runner::run_llm_loop(
         &model,
         &mut history,
@@ -813,23 +816,10 @@ where
             agent: "sleep",
         },
         move |name, args, _choices| {
-            let logger = Arc::clone(&dispatch_logger);
-            let repo_clone = context_repo.clone();
+            let ctx = sleep_ctx.clone();
             let m = Arc::clone(&dispatch_metrics);
             async move {
-                let ctx = tools::SleepToolContext {
-                    context_repo: repo_clone,
-                    logger: Arc::clone(&logger),
-                };
-                let result = tools::dispatch_sleep_tool(&name, &args, &ctx).await;
-                let call_outcome = if result.starts_with("error:") {
-                    ToolOutcome::Error
-                } else {
-                    ToolOutcome::Ok
-                };
-                m.record_tool_call(&name, ToolScope::Sleep, call_outcome);
-                logger.debug(&format!("[sleep-time] tool '{name}' result={result}"));
-                (result, false)
+                tools::dispatch_sleep_tool_recorded(&name, &args, &ctx, &m, "sleep-time").await
             }
         },
     )
@@ -884,41 +874,32 @@ where
         Message::user("Please clean up the context repository now.".to_string()),
     ];
 
-    let dispatch_logger = Arc::clone(&ctx.logger);
     let dispatch_metrics = Arc::clone(&ctx.metrics);
-    let (outcome, _last_text) = loop_runner::run_llm_loop(
-        &model,
-        &mut history,
-        defrag_tools,
-        20,
-        Arc::clone(&ctx.metrics),
-        &loop_runner::LlmLoopLabels {
-            model: model_name,
-            provider,
-            agent: "defrag",
-        },
-        move |name, args, _choices| {
-            let logger = Arc::clone(&dispatch_logger);
-            let repo_clone = repo.clone();
-            let m = Arc::clone(&dispatch_metrics);
-            async move {
-                let ctx = tools::SleepToolContext {
-                    context_repo: repo_clone,
-                    logger: Arc::clone(&logger),
-                };
-                let result = tools::dispatch_sleep_tool(&name, &args, &ctx).await;
-                let call_outcome = if result.starts_with("error:") {
-                    ToolOutcome::Error
-                } else {
-                    ToolOutcome::Ok
-                };
-                m.record_tool_call(&name, ToolScope::Sleep, call_outcome);
-                logger.debug(&format!("[defrag] tool '{name}' result={result}"));
-                (result, false)
-            }
-        },
-    )
-    .await?;
+    let sleep_ctx = tools::SleepToolContext {
+        context_repo: repo,
+        logger: Arc::clone(&ctx.logger),
+    };
+    let (outcome, _last_text) =
+        loop_runner::run_llm_loop(
+            &model,
+            &mut history,
+            defrag_tools,
+            20,
+            Arc::clone(&ctx.metrics),
+            &loop_runner::LlmLoopLabels {
+                model: model_name,
+                provider,
+                agent: "defrag",
+            },
+            move |name, args, _choices| {
+                let ctx = sleep_ctx.clone();
+                let m = Arc::clone(&dispatch_metrics);
+                async move {
+                    tools::dispatch_sleep_tool_recorded(&name, &args, &ctx, &m, "defrag").await
+                }
+            },
+        )
+        .await?;
 
     ctx.logger
         .debug(&format!("[defrag] loop ended with {:?}", outcome));
