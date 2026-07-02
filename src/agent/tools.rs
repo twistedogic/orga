@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::board::Board;
 use crate::logging::Logger;
-use crate::memory::{CompactionStore, ContextRepository, TodoStore};
+use crate::memory::{CompactionStore, ContextRepository, TodoStore, format_tree_index};
 use crate::workspace::WorkspaceStore;
 
 pub struct ToolContext {
@@ -174,17 +174,7 @@ async fn dispatch_memory_list(ctx: &ToolContext) -> String {
         if entries.is_empty() {
             "(empty repository — no memory files yet)".to_string()
         } else {
-            entries
-                .iter()
-                .map(|e| {
-                    if e.description.is_empty() {
-                        e.path.clone()
-                    } else {
-                        format!("{} — {}", e.path, e.description)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            format_tree_index(&entries)
         }
     })
 }
@@ -607,17 +597,7 @@ pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolCon
             if entries.is_empty() {
                 "(empty repository)".to_string()
             } else {
-                entries
-                    .iter()
-                    .map(|e| {
-                        if e.description.is_empty() {
-                            e.path.clone()
-                        } else {
-                            format!("{} — {}", e.path, e.description)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                format_tree_index(&entries)
             }
         }),
         "memory_read" => {

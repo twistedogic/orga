@@ -18,7 +18,7 @@ use crate::board::build_board;
 use crate::config::{AppConfig, LlmConfig};
 use crate::error::OrgaError;
 use crate::logging::Logger;
-use crate::memory::{CompactionStore, ContextRepository, TodoStore};
+use crate::memory::{CompactionStore, ContextRepository, TodoStore, format_tree_index};
 use crate::metrics::{AgentMetrics, TicketOutcome, ToolOutcome, ToolScope};
 use crate::workspace::WorkspaceStore;
 
@@ -777,17 +777,7 @@ where
     let tree_index = if entries.is_empty() {
         "(empty)".to_string()
     } else {
-        entries
-            .iter()
-            .map(|e| {
-                if e.description.is_empty() {
-                    e.path.clone()
-                } else {
-                    format!("{} — {}", e.path, e.description)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        format_tree_index(&entries)
     };
 
     let system = SLEEP_SYSTEM_PROMPT.replace("{tree_index}", &tree_index);
@@ -882,17 +872,7 @@ where
 
     let repo = ContextRepository::open(&memory_repo_path, agent_name)?;
     let entries = repo.list().unwrap_or_default();
-    let tree = entries
-        .iter()
-        .map(|e| {
-            if e.description.is_empty() {
-                e.path.clone()
-            } else {
-                format!("{} — {}", e.path, e.description)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let tree = format_tree_index(&entries);
 
     let system = DEFRAG_SYSTEM_PROMPT.replace("{tree}", &tree);
 

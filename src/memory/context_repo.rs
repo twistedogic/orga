@@ -10,6 +10,31 @@ pub struct ContextEntry {
     pub description: String,
 }
 
+impl ContextEntry {
+    /// Single-line representation used by every caller that lists the repo:
+    /// `path` alone when the entry has no frontmatter description, otherwise
+    /// `path — description`. Centralized so the format only has one source of truth.
+    pub fn format_line(&self) -> String {
+        if self.description.is_empty() {
+            self.path.clone()
+        } else {
+            format!("{} — {}", self.path, self.description)
+        }
+    }
+}
+
+/// Joined rendering of multiple `ContextEntry` values, one per line.
+/// Callers handle the empty-list case themselves because each has its own
+/// UX-appropriate empty label (e.g. "(empty)" in system prompts vs a more
+/// verbose "(empty repository — no memory files yet)" in tool responses).
+pub fn format_tree_index(entries: &[ContextEntry]) -> String {
+    entries
+        .iter()
+        .map(|e| e.format_line())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub struct RepoStats {
     pub file_count: usize,
     pub total_size_kb: u64,
@@ -479,6 +504,44 @@ impl DefragReport {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn format_line_with_description_uses_em_dash_separator() {
+        let e = ContextEntry {
+            path: "themes/auth.md".to_string(),
+            description: "JWT patterns".to_string(),
+        };
+        assert_eq!(e.format_line(), "themes/auth.md — JWT patterns");
+    }
+
+    #[test]
+    fn format_line_without_description_returns_path_only() {
+        let e = ContextEntry {
+            path: "notes.md".to_string(),
+            description: String::new(),
+        };
+        assert_eq!(e.format_line(), "notes.md");
+    }
+
+    #[test]
+    fn format_tree_index_joins_lines_with_newline() {
+        let entries = vec![
+            ContextEntry {
+                path: "a.md".to_string(),
+                description: "alpha".to_string(),
+            },
+            ContextEntry {
+                path: "b.md".to_string(),
+                description: String::new(),
+            },
+        ];
+        assert_eq!(format_tree_index(&entries), "a.md — alpha\nb.md");
+    }
+
+    #[test]
+    fn format_tree_index_empty_returns_empty_string() {
+        assert_eq!(format_tree_index(&[]), "");
+    }
 
     fn open_temp_repo() -> (ContextRepository, tempfile::TempDir) {
         let dir = tempdir().unwrap();
