@@ -6,6 +6,7 @@ use crate::error::OrgaError;
 use crate::logging::Logger;
 use crate::models::{Column, Member, Ticket, TicketSummary};
 
+pub mod agent_tag;
 pub mod linear;
 pub mod trello;
 

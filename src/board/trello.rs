@@ -7,6 +7,7 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 
 use crate::board::Board;
+use crate::board::agent_tag::{append_agent_tag, parse_agent_tag};
 use crate::error::OrgaError;
 use crate::logging::Logger;
 use crate::models::{Column, Comment, Member, Ticket, TicketSummary};
@@ -421,26 +422,6 @@ impl Board for TrelloBackend {
     }
 }
 
-fn append_agent_tag(text: &str, agent_name: &str) -> String {
-    if agent_name.is_empty() {
-        return text.to_string();
-    }
-    format!("{text}\n\n_[orga:{agent_name}]_")
-}
-
-fn parse_agent_tag(text: &str) -> (String, Option<String>) {
-    if let Some(pos) = text.rfind("\n\n_[orga:") {
-        let suffix = &text[pos + 2..];
-        if suffix.starts_with("_[orga:") && suffix.ends_with("]_") {
-            let inner = &suffix[7..suffix.len() - 2];
-            if !inner.is_empty() {
-                return (text[..pos].to_string(), Some(inner.to_string()));
-            }
-        }
-    }
-    (text.to_string(), None)
-}
-
 #[derive(Debug, Deserialize)]
 struct TrelloList {
     id: String,
@@ -517,34 +498,6 @@ struct TrelloActionData {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn append_agent_tag_adds_suffix() {
-        let result = append_agent_tag("hello", "agent-1");
-        assert_eq!(result, "hello\n\n_[orga:agent-1]_");
-    }
-
-    #[test]
-    fn append_agent_tag_empty_name_unchanged() {
-        let result = append_agent_tag("hello", "");
-        assert_eq!(result, "hello");
-    }
-
-    #[test]
-    fn parse_agent_tag_strips_and_extracts() {
-        let text = "need more context\n\n_[orga:agent-1]_";
-        let (content, agent_name) = parse_agent_tag(text);
-        assert_eq!(content, "need more context");
-        assert_eq!(agent_name, Some("agent-1".to_string()));
-    }
-
-    #[test]
-    fn parse_agent_tag_no_tag_unchanged() {
-        let text = "just a normal comment";
-        let (content, agent_name) = parse_agent_tag(text);
-        assert_eq!(content, "just a normal comment");
-        assert_eq!(agent_name, None);
-    }
 
     fn make_card(actions: Vec<TrelloAction>) -> TrelloCard {
         TrelloCard {
