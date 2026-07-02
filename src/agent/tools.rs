@@ -44,14 +44,21 @@ fn tool_response<T, E: std::fmt::Display>(
     }
 }
 
-macro_rules! log_action {
-    ($ctx:expr, $dry_run:expr, $msg:expr) => {
-        if $dry_run {
-            println!("[dry-run] {}", $msg);
-        } else {
-            $ctx.logger.info(&format!("[agent] {}", $msg));
+/// Every tool that wants to log before side-effecting performed the same two
+/// steps in lockstep before this was added — collapse them here so the
+/// dry-run-output wording (`[dry-run] action would have been executed`) and
+/// the per-call log detail (`[agent] action: detail`) live in one place.
+/// Callers pass two distinct messages so dry-run output stays terse while the
+/// normal-mode log keeps tool-specific detail like the comment text or
+/// sub-ticket title.
+macro_rules! logged_or_dry_return {
+    ($ctx:expr, $log_msg:expr, $action_msg:expr) => {{
+        if $ctx.dry_run {
+            println!("[dry-run] {}", $log_msg);
+            return dry_run_msg($action_msg);
         }
-    };
+        $ctx.logger.info(&format!("[agent] {}", $log_msg));
+    }};
 }
 
 pub async fn dispatch(tool_name: &str, args: &str, ctx: &ToolContext) -> String {
@@ -106,14 +113,11 @@ async fn dispatch_comment(args: &str, ctx: &ToolContext) -> String {
         Ok(a) => a,
         Err(e) => return e,
     };
-    log_action!(
+    logged_or_dry_return!(
         ctx,
-        ctx.dry_run,
-        format!("comment on {}: {:?}", ctx.ticket_id, parsed.text)
+        format!("comment on {}: {:?}", ctx.ticket_id, parsed.text),
+        &format!("comment on {}", ctx.ticket_id)
     );
-    if ctx.dry_run {
-        return dry_run_msg(&format!("comment on {}", ctx.ticket_id));
-    }
     tool_response(
         ctx.board.comment(&ctx.ticket_id, &parsed.text).await,
         |()| "comment posted".to_string(),
@@ -132,20 +136,17 @@ async fn dispatch_create_sub(args: &str, ctx: &ToolContext) -> String {
         Ok(a) => a,
         Err(e) => return e,
     };
-    log_action!(
+    logged_or_dry_return!(
         ctx,
-        ctx.dry_run,
         format!(
             "create sub-ticket under {}: {:?}",
             ctx.ticket_id, parsed.title
-        )
-    );
-    if ctx.dry_run {
-        return dry_run_msg(&format!(
+        ),
+        &format!(
             "create sub-ticket '{}' under {}",
             parsed.title, ctx.ticket_id
-        ));
-    }
+        )
+    );
     tool_response(
         ctx.board
             .create_sub(
@@ -199,10 +200,11 @@ async fn dispatch_memory_write(args: &str, ctx: &ToolContext) -> String {
         Ok(a) => a,
         Err(e) => return e,
     };
-    log_action!(ctx, ctx.dry_run, format!("memory_write {}", parsed.path));
-    if ctx.dry_run {
-        return dry_run_msg(&format!("memory_write {}", parsed.path));
-    }
+    logged_or_dry_return!(
+        ctx,
+        format!("memory_write {}", parsed.path),
+        &format!("memory_write {}", parsed.path)
+    );
     tool_response(
         ctx.context_repo
             .write(&parsed.path, &parsed.content, &parsed.commit_msg),
@@ -243,14 +245,11 @@ async fn dispatch_compact(args: &str, ctx: &ToolContext) -> String {
         Ok(a) => a,
         Err(e) => return e,
     };
-    log_action!(
+    logged_or_dry_return!(
         ctx,
-        ctx.dry_run,
-        format!("compact comments for {}", ctx.ticket_id)
+        format!("compact comments for {}", ctx.ticket_id),
+        &format!("compact comments for {}", ctx.ticket_id)
     );
-    if ctx.dry_run {
-        return dry_run_msg(&format!("compact comments for {}", ctx.ticket_id));
-    }
     let boundary = chrono::Utc::now();
     tool_response(
         ctx.compaction_store
@@ -266,14 +265,11 @@ struct DoneArgs {
 
 async fn dispatch_done(args: &str, ctx: &ToolContext) -> String {
     let parsed: DoneArgs = serde_json::from_str(args).unwrap_or(DoneArgs { comment: None });
-    log_action!(
+    logged_or_dry_return!(
         ctx,
-        ctx.dry_run,
-        format!("return ticket {} to creator (done)", ctx.ticket_id)
+        format!("return ticket {} to creator (done)", ctx.ticket_id),
+        &format!("return ticket {} to creator", ctx.ticket_id)
     );
-    if ctx.dry_run {
-        return dry_run_msg(&format!("return ticket {} to creator", ctx.ticket_id));
-    }
     tool_response(
         ctx.board
             .return_ticket(&ctx.ticket_id, parsed.comment.as_deref())
