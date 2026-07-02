@@ -3,6 +3,9 @@ use crate::config::{AppConfig, LlmConfig, SubagentConfig};
 use crate::memory::ContextRepository;
 use crate::models::Ticket;
 
+const MAIN_AGENT_SYSTEM_PROMPT: &str = include_str!("prompts/main_agent.md");
+const DISPATCHER_SYSTEM_PROMPT: &str = include_str!("prompts/dispatcher.md");
+
 pub struct SkillContext {
     pub available: Vec<(String, String)>,
     pub active: Vec<(String, String)>,
@@ -78,31 +81,17 @@ fn build_system_prompt(_ticket: &Ticket, context_repo: &ContextRepository, app_c
     let mut parts: Vec<String> = Vec::new();
 
     if subagents.is_empty() {
-        parts.push(format!(
-            "You are an AI agent named '{}' operating on a kanban board. \
-You communicate with teammates exclusively through ticket comments, \
-checklists, and board actions. You are a first-class board member alongside humans.\n\
-\n\
-Available tools: comment, create_sub, compact, bash, done, skip, memory_list, memory_read, memory_write, memory_search.\n\
-\n\
-Use `done(comment?)` when you have completed work on a ticket — this returns it to the creator.\n\
-Use `skip()` if the ticket is not actionable right now.",
-            app_cfg.agent.name
-        ));
+        parts.push(
+            MAIN_AGENT_SYSTEM_PROMPT
+                .replace("{agent_name}", &app_cfg.agent.name)
+                .replace("{tools}", &crate::agent::tools::MAIN_TOOLS.join(", ")),
+        );
     } else {
-        parts.push(format!(
-            "You are an AI agent named '{}' operating on a kanban board. \
-You are a dispatcher: you coordinate work by delegating to specialized subagents and \
-communicating results to teammates via ticket comments.\n\
-\n\
-Available tools: comment, dispatch, skip, done, memory_list, memory_read, memory_write, memory_search.\n\
-\n\
-Use `dispatch(subagent, task)` to delegate work to a subagent. The subagent will return a result.\n\
-Use `comment(text)` to communicate with teammates or ask for clarification.\n\
-Use `done(comment?)` when the user is satisfied and the ticket is complete.\n\
-Use `skip()` if the ticket is not actionable right now.",
-            app_cfg.agent.name
-        ));
+        parts.push(
+            DISPATCHER_SYSTEM_PROMPT
+                .replace("{agent_name}", &app_cfg.agent.name)
+                .replace("{tools}", &crate::agent::tools::MAIN_TOOLS.join(", ")),
+        );
 
         let mut section = "\n## Available Subagents".to_string();
         for (name, desc) in subagents {
@@ -278,6 +267,7 @@ mod tests {
             skills: None,
             workspace: None,
             subagents: vec![],
+            metrics: None,
         }
     }
 

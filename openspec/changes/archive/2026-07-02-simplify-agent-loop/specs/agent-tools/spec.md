@@ -1,8 +1,5 @@
-# agent-tools Specification
+## MODIFIED Requirements
 
-## Purpose
-Typed tool set exposed to the LLM during a ticket cycle. Each tool maps to an existing orga board, memory, or artifact operation. Dry-run mode suppresses all mutating tools while allowing read tools to execute.
-## Requirements
 ### Requirement: Tool set
 The agent loop SHALL expose the following tools to the LLM during a ticket cycle. Each tool SHALL correspond to an existing orga operation. In dry-run mode, mutating tools SHALL be logged but not executed; read tools SHALL execute normally. When subagents are configured, the main agent receives a narrowed tool set; subagents receive the tool set defined in their config plus `return` and `todos`. When no subagents are configured, the full tool set plus `todos` is exposed unchanged. `todos` SHALL always be available to all agents regardless of config. The four memory tools (`memory_list`, `memory_read`, `memory_write`, `memory_search`) SHALL always be available to all agents regardless of config. `move_ticket` SHALL NOT be listed in `VALID_TOOLS` until a dispatch implementation exists.
 
@@ -84,11 +81,3 @@ The set of tools listed in the agent's system prompt under "Available tools: …
 #### Scenario: Single source of truth for main-agent tool set
 - **WHEN** the set of main-agent tools needs to change
 - **THEN** the only edit required is to `pub const MAIN_TOOLS: &[&str]` in `src/agent/tools.rs`; the prompt text and the runtime tool definitions both reflect the change without further code edits
-
-### Requirement: Tool error handling
-If a tool call fails (e.g., invalid ticket ID, network error, artifact not found), the error SHALL be returned as a `tool_result` with `is_error: true`. The cycle SHALL continue within the cap.
-
-#### Scenario: Tool error returned to LLM
-- **WHEN** a tool call fails due to a network or board error
-- **THEN** the error message is returned as a tool_result and the LLM receives it in the next turn
-

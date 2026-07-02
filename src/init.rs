@@ -254,6 +254,7 @@ fn run_trello_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(
         skills: None,
         workspace: None,
         subagents: vec![],
+        metrics: None,
     });
     config.agent.name = agent_name;
     config.board.backend = "trello".into();
@@ -348,6 +349,7 @@ fn run_linear_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(
         skills: None,
         workspace: None,
         subagents: vec![],
+        metrics: None,
     });
     config.agent.name = agent_name;
     config.board.backend = "linear".into();
@@ -459,6 +461,7 @@ pub fn run_agent_init(config_path: &Path) -> Result<(), OrgaError> {
         skills: None,
         workspace: None,
         subagents: vec![],
+        metrics: None,
     });
 
     config.llm = Some(LlmConfig {
@@ -520,6 +523,7 @@ mod tests {
             skills: None,
             workspace: None,
             subagents: vec![],
+            metrics: None,
         }
     }
 
@@ -536,6 +540,7 @@ mod tests {
             skills: None,
             workspace: None,
             subagents: vec![],
+            metrics: None,
         }
     }
 

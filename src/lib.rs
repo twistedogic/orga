@@ -5,6 +5,7 @@ pub mod error;
 pub mod init;
 pub mod logging;
 pub mod memory;
+pub mod metrics;
 pub mod models;
 pub mod output;
 pub mod systemd;

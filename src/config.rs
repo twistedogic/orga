@@ -74,6 +74,24 @@ pub struct LoggingConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MetricsConfig {
+    #[serde(default = "default_metrics_listen_addr", skip_serializing_if = "Option::is_none")]
+    pub listen_addr: Option<String>,
+}
+
+fn default_metrics_listen_addr() -> Option<String> {
+    Some("127.0.0.1:9090".to_string())
+}
+
+impl MetricsConfig {
+    pub fn listen_addr(&self) -> &str {
+        self.listen_addr
+            .as_deref()
+            .unwrap_or("127.0.0.1:9090")
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LlmConfig {
     pub provider: String,
     pub api_key: String,
@@ -112,6 +130,8 @@ pub struct AppConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<MetricsConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub comment_compaction_threshold: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skills: Option<SkillsConfig>,
@@ -136,11 +156,6 @@ impl AppConfig {
         })?;
         let mut config: AppConfig = toml::from_str(&content)
             .map_err(|e| OrgaError::ConfigError(format!("invalid config: {e}")))?;
-        if content.contains("[artifact]") || content.contains("[artifact.git]") {
-            return Err(OrgaError::ConfigError(
-                "[artifact] section is no longer supported; use [workspace] for per-ticket file storage".into(),
-            ));
-        }
         if let Some(parent) = path.parent() {
             let agents_dir = parent.join("agents");
             let logger = config.logger();
@@ -246,6 +261,15 @@ impl AppConfig {
                 ));
             }
         }
+        if let Some(ref m) = self.metrics {
+            let addr = m.listen_addr();
+            if addr.parse::<std::net::SocketAddr>().is_err() {
+                return Err(OrgaError::ConfigError(format!(
+                    "[metrics] listen_addr '{}' is not a valid host:port",
+                    addr
+                )));
+            }
+        }
         // Validate subagents
         const VALID_TOOLS: &[&str] = &[
             "comment", "assign", "create_sub",
@@ -310,6 +334,10 @@ impl AppConfig {
                 "[llm] section is required for `orga agent` but is missing from config".into(),
             )
         })
+    }
+
+    pub fn metrics_config(&self) -> Option<&MetricsConfig> {
+        self.metrics.as_ref()
     }
 
     pub fn save(&self, path: &Path) -> Result<(), OrgaError> {
@@ -500,6 +528,37 @@ team_id = "team-xyz"
         let f = write_config(VALID_LINEAR_CONFIG);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.linear.unwrap().api_key, "lin_api_abc123");
+    }
+
+    #[test]
+    fn metrics_section_absent_uses_none() {
+        let f = write_config(VALID_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.metrics.is_none());
+    }
+
+    #[test]
+    fn metrics_section_default_listen_addr() {
+        let content = format!("{VALID_CONFIG}\n[metrics]\n");
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.metrics_config().unwrap().listen_addr(), "127.0.0.1:9090");
+    }
+
+    #[test]
+    fn metrics_section_custom_listen_addr() {
+        let content = format!("{VALID_CONFIG}\n[metrics]\nlisten_addr = \"0.0.0.0:9100\"\n");
+        let f = write_config(&content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.metrics_config().unwrap().listen_addr(), "0.0.0.0:9100");
+    }
+
+    #[test]
+    fn metrics_invalid_listen_addr_rejected() {
+        let content = format!("{VALID_CONFIG}\n[metrics]\nlisten_addr = \"not-a-socket-addr\"\n");
+        let f = write_config(&content);
+        let err = AppConfig::load(f.path()).unwrap_err();
+        assert!(err.to_string().contains("listen_addr"));
     }
 
     #[test]

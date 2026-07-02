@@ -31,3 +31,18 @@ The system SHALL provide a `make_completion_request` free function that construc
 - **WHEN** `make_completion_request` is called with non-empty history and a tool list
 - **THEN** a valid `CompletionRequest` is returned with `chat_history` set from history and `tools` set from the list; all other fields are `None`
 
+### Requirement: LLM call metrics
+The `run_llm_loop` function SHALL observe LLM request volume, duration, and token usage metrics for every `model.completion(req).await` call. It SHALL accept an `Arc<AgentMetrics>` recorder along with `model`, `provider`, and `agent` label strings. On success, it SHALL increment the LLM request counter with `kind="ok"`, observe the call duration, and record the token usage. On error, it SHALL classify the failure into an `LlmErrorKind` (see the `error` capability), increment the LLM request counter with the classified `kind` label, and return `Err(OrgaError::LlmError { kind, message })`. The duration SHALL be observed on both success and error paths.
+
+#### Scenario: LLM request observed on success
+- **WHEN** `run_llm_loop` completes a successful `model.completion(req).await`
+- **THEN** `orga_llm_requests_total{model=<...>,provider=<...>,agent=<...>,kind="ok"}` is incremented, `orga_llm_request_duration_seconds{...}` is observed, and the token counters are incremented from `response.usage`
+
+#### Scenario: LLM error classified and observed
+- **WHEN** `run_llm_loop` catches a `CompletionError` from `model.completion(req).await`
+- **THEN** the error is classified into `LlmErrorKind`, `orga_llm_requests_total{...kind=<...>}` is incremented with the kind label, and the function returns `Err(OrgaError::LlmError { kind, message })`
+
+#### Scenario: Token usage recorded
+- **WHEN** a successful response carries `usage.input_tokens = 100, output_tokens = 50, cached_input_tokens = 20, reasoning_tokens = 10, total_tokens = 180`
+- **THEN** the recorder's `input`, `output`, `cached`, `reasoning`, and `total` series for the same labels each gain the reported amount (with `cached` gaining `20`)
+

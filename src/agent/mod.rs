@@ -9,13 +9,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rig_core::client::CompletionClient;
-use rig_core::completion::{CompletionModel, Message};
+use rig_core::completion::message::{AssistantContent, Message, Text as MsgText, ToolResultContent, UserContent};
+use rig_core::completion::CompletionModel;
 
 use crate::board::build_board;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, LlmConfig};
 use crate::error::OrgaError;
 use crate::logging::Logger;
 use crate::memory::{CompactionStore, ContextRepository, TodoStore};
+use crate::metrics::{AgentMetrics, TicketOutcome, ToolOutcome, ToolScope};
 use crate::workspace::WorkspaceStore;
 
 use config::{LlmClient, build_llm_client};
@@ -23,56 +25,208 @@ use context::{SkillContext, build_context};
 use skills::{SkillMeta, match_skills, scan_skills};
 use tools::{ToolContext, dispatch, is_terminal_tool, all_tool_definitions, tool_definitions_for};
 
-pub async fn run_agent(once: bool, dry_run: bool, config: &AppConfig, logger: Arc<Logger>) -> Result<(), OrgaError> {
-    let llm_cfg = config.llm_config()?;
-    let client = build_llm_client(llm_cfg)?;
+const SLEEP_SYSTEM_PROMPT: &str = include_str!("prompts/sleep_time.md");
+const DEFRAG_SYSTEM_PROMPT: &str = include_str!("prompts/defrag.md");
 
-    if once {
-        run_once_with_client(&client, dry_run, config, Arc::clone(&logger)).await
-    } else {
-        run_daemon(&client, dry_run, config, Arc::clone(&logger)).await
+fn count_actions_and_detect_done(history: &[Message]) -> (usize, bool) {
+    let mut actions = 0usize;
+    let mut did_done = false;
+    for msg in history {
+        match msg {
+            Message::User { content } => {
+                actions += content
+                    .iter()
+                    .filter(|c| matches!(c, UserContent::ToolResult(_)))
+                    .count();
+            }
+            Message::Assistant { content, .. } => {
+                did_done |= content.iter().any(|c| matches!(
+                    c,
+                    AssistantContent::ToolCall(tc) if tc.function.name == "done"
+                ));
+            }
+            _ => {}
+        }
+    }
+    (actions, did_done)
+}
+
+fn extract_return_value(msg: &Message) -> Option<String> {
+    let Message::User { content } = msg else { return None; };
+    let UserContent::ToolResult(tr) = content.iter().next()? else { return None; };
+    let ToolResultContent::Text(MsgText { text }) = tr.content.iter().next()? else { return None; };
+    Some(text.clone())
+}
+
+#[cfg(test)]
+mod history_helpers_tests {
+    use super::*;
+    use rig_core::completion::message::{ToolCall, ToolFunction, ToolResult};
+    use rig_core::OneOrMany;
+
+    fn tool_result_message(text: &str) -> Message {
+        Message::User {
+            content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                id: "c1".to_string(),
+                call_id: None,
+                content: OneOrMany::one(ToolResultContent::Text(MsgText { text: text.to_string() })),
+            })),
+        }
+    }
+
+    fn done_assistant_message() -> Message {
+        Message::Assistant {
+            id: None,
+            content: OneOrMany::one(AssistantContent::ToolCall(ToolCall {
+                id: "c1".to_string(),
+                call_id: None,
+                function: ToolFunction {
+                    name: "done".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+                signature: None,
+                additional_params: None,
+            })),
+        }
+    }
+
+    #[test]
+    fn count_increments_for_tool_result() {
+        let history = vec![tool_result_message("hi")];
+        let (actions, _) = count_actions_and_detect_done(&history);
+        assert_eq!(actions, 1);
+    }
+
+    #[test]
+    fn count_does_not_increment_for_text_user_message() {
+        let history = vec![Message::user("hello".to_string())];
+        let (actions, _) = count_actions_and_detect_done(&history);
+        assert_eq!(actions, 0);
+    }
+
+    #[test]
+    fn done_assistant_message_sets_did_done() {
+        let history = vec![done_assistant_message()];
+        let (_, did_done) = count_actions_and_detect_done(&history);
+        assert!(did_done);
+    }
+
+    #[test]
+    fn non_done_tool_call_does_not_set_did_done() {
+        let history = vec![Message::Assistant {
+            id: None,
+            content: OneOrMany::one(AssistantContent::ToolCall(ToolCall {
+                id: "c1".to_string(),
+                call_id: None,
+                function: ToolFunction {
+                    name: "comment".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+                signature: None,
+                additional_params: None,
+            })),
+        }];
+        let (_, did_done) = count_actions_and_detect_done(&history);
+        assert!(!did_done);
+    }
+
+    #[test]
+    fn extract_return_value_returns_text_from_tool_result() {
+        let msg = tool_result_message("the answer");
+        assert_eq!(extract_return_value(&msg), Some("the answer".to_string()));
+    }
+
+    #[test]
+    fn extract_return_value_returns_none_for_text_user_message() {
+        let msg = Message::user("hello".to_string());
+        assert_eq!(extract_return_value(&msg), None);
     }
 }
 
-async fn run_daemon(
-    client: &LlmClient,
-    dry_run: bool,
-    config: &AppConfig,
-    logger: Arc<Logger>,
-) -> Result<(), OrgaError> {
-    let interval = Duration::from_secs(config.llm_config()?.poll_interval_secs());
+pub struct RunContext<'a> {
+    pub config: &'a AppConfig,
+    pub logger: Arc<Logger>,
+    pub metrics: Arc<AgentMetrics>,
+    pub dry_run: bool,
+    pub llm_cfg: &'a LlmConfig,
+}
+
+pub async fn run_agent(once: bool, dry_run: bool, config: &AppConfig, logger: Arc<Logger>) -> Result<(), OrgaError> {
+    let llm_cfg = config.llm_config()?;
+    let client = build_llm_client(llm_cfg)?;
+    let metrics = Arc::new(AgentMetrics::new());
+    let ctx = RunContext { config, logger, metrics, dry_run, llm_cfg };
+
+    if once {
+        run_once_for_client(&ctx, &client).await
+    } else {
+        run_daemon(&ctx, &client).await
+    }
+}
+
+async fn run_daemon(ctx: &RunContext<'_>, client: &LlmClient) -> Result<(), OrgaError> {
+    if let Some(metrics_cfg) = ctx.config.metrics_config() {
+        if let Err(e) = bind_metrics_server(metrics_cfg.listen_addr(), Arc::clone(&ctx.metrics), Arc::clone(&ctx.logger)).await {
+            ctx.logger.warn(&format!("[metrics] could not bind {}: {e}", metrics_cfg.listen_addr()));
+        }
+    }
+
+    let interval = Duration::from_secs(ctx.llm_cfg.poll_interval_secs());
     loop {
-        if let Err(e) = run_once_with_client(client, dry_run, config, Arc::clone(&logger)).await {
-            logger.error(&format!("[agent] poll cycle error: {e}"));
+        if let Err(e) = run_once_for_client(ctx, client).await {
+            ctx.logger.error(&format!("[agent] poll cycle error: {e}"));
         }
         tokio::time::sleep(interval).await;
     }
 }
 
-async fn run_once_with_client(
-    client: &LlmClient,
-    dry_run: bool,
-    config: &AppConfig,
-    logger: Arc<Logger>,
-) -> Result<(), OrgaError> {
+async fn run_once_for_client(ctx: &RunContext<'_>, client: &LlmClient) -> Result<(), OrgaError> {
     match client {
-        LlmClient::Anthropic(c) => run_once(c, dry_run, config, logger).await,
-        LlmClient::OpenAi(c) => run_once(c, dry_run, config, logger).await,
+        LlmClient::Anthropic(c) => run_poll(ctx, c).await,
+        LlmClient::OpenAi(c) => run_poll(ctx, c).await,
     }
 }
 
-async fn run_once<C>(
-    client: &C,
-    dry_run: bool,
-    config: &AppConfig,
+async fn bind_metrics_server(
+    listen_addr: &str,
+    metrics: Arc<AgentMetrics>,
     logger: Arc<Logger>,
-) -> Result<(), OrgaError>
+) -> std::io::Result<()> {
+    let listener = tokio::net::TcpListener::bind(listen_addr).await?;
+    logger.info(&format!("[metrics] serving on http://{listen_addr}/metrics"));
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let body = metrics.encode().unwrap_or_default();
+                    let _ = tokio::spawn(serve_one(stream, body));
+                }
+                Err(e) => logger.error(&format!("[metrics] accept error: {e}")),
+            }
+        }
+    });
+    Ok(())
+}
+
+async fn serve_one(mut stream: tokio::net::TcpStream, body: String) -> std::io::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = [0u8; 1024];
+    let _ = stream.read(&mut buf).await?;
+    let response = format!(
+        "HTTP/1.0 200 OK\r\nContent-Type: text/plain; version=0.0.4; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body,
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.shutdown().await
+}
+
+async fn run_poll<C>(ctx: &RunContext<'_>, client: &C) -> Result<(), OrgaError>
 where
     C: CompletionClient + Sync,
     C::CompletionModel: CompletionModel + Clone + 'static,
 {
-    let board = build_board(config, Arc::clone(&logger)).await?;
-
+    let board = build_board(ctx.config, Arc::clone(&ctx.logger)).await?;
     let tickets = board.list_assigned().await?;
     let total = tickets.len();
     let actionable: Vec<_> = tickets
@@ -80,50 +234,47 @@ where
         .filter(|t| !t.completed && !t.last_commenter_is_agent)
         .collect();
 
-    logger.info(&format!("[agent] {} ticket(s) assigned, {} waiting on agent", total, actionable.len()));
+    ctx.logger.info(&format!("[agent] {total} ticket(s) assigned, {} waiting on agent", actionable.len()));
 
     if actionable.is_empty() {
         return Ok(());
     }
-
-    logger.info(&format!("[agent] processing {} ticket(s)", actionable.len()));
+    ctx.logger.info(&format!("[agent] processing {} ticket(s)", actionable.len()));
 
     for summary in actionable {
         let ticket_id = summary.id.clone();
-        let result = process_ticket(
-            client,
-            &ticket_id,
-            dry_run,
-            config,
-            Arc::clone(&logger),
-        )
-        .await;
-
+        let started = std::time::Instant::now();
+        let result = run_ticket(ctx, client, &ticket_id).await;
+        let elapsed = started.elapsed();
+        let outcome = match &result {
+            Ok(TicketProcessingOutcome::Success) => TicketOutcome::Success,
+            Ok(TicketProcessingOutcome::Skipped) => TicketOutcome::Skipped,
+            Ok(TicketProcessingOutcome::CapReached) => TicketOutcome::CapReached,
+            Err(_) => TicketOutcome::Error,
+        };
+        ctx.metrics.record_ticket(outcome, elapsed);
         if let Err(e) = result {
-            logger.error(&format!("[agent] error processing ticket {ticket_id}: {e}"));
+            ctx.logger.error(&format!("[agent] error processing ticket {ticket_id}: {e}"));
         }
     }
 
     Ok(())
 }
 
-async fn process_ticket<C>(
+async fn run_ticket<C>(
+    ctx: &RunContext<'_>,
     client: &C,
     ticket_id: &str,
-    dry_run: bool,
-    config: &AppConfig,
-    logger: Arc<Logger>,
-) -> Result<(), OrgaError>
+) -> Result<TicketProcessingOutcome, OrgaError>
 where
     C: CompletionClient + Sync,
     C::CompletionModel: CompletionModel + Clone + 'static,
 {
-    let llm_cfg = config.llm_config()?;
-    let board = build_board(config, Arc::clone(&logger)).await?;
-    let db_path = config.memory_db_path();
+    let db_path = ctx.config.memory_db_path();
     let compaction_store = CompactionStore::open(&db_path)?;
-    let context_repo = ContextRepository::open(&config.memory_repo_path(), &config.agent.name)?;
+    let context_repo = ContextRepository::open(&ctx.config.memory_repo_path(), &ctx.config.agent.name)?;
 
+    let board = build_board(ctx.config, Arc::clone(&ctx.logger)).await?;
     let mut ticket = board.get_ticket(ticket_id).await?;
 
     if let Some(rec) = compaction_store.get(ticket_id)? {
@@ -135,99 +286,83 @@ where
         });
     }
 
-    let ctx_msg = {
-        let all_skills = config.skills_path().map(|path| scan_skills(&path, &logger)).unwrap_or_default();
+    let all_skills = ctx.config.skills_path()
+        .map(|path| scan_skills(&path, &ctx.logger))
+        .unwrap_or_default();
 
-        let skill_ctx = if !all_skills.is_empty() {
-            let matched = match_skills(&all_skills, &ticket.summary, &logger);
-            Some(SkillContext {
-                available: all_skills.iter().map(|s| (s.name.clone(), s.description.clone())).collect(),
-                active: matched.iter().map(|s| (s.name.clone(), s.body.clone())).collect(),
-            })
-        } else {
-            None
-        };
-
-        let subagent_descs: Vec<(String, String)> = config.subagents.iter()
-            .map(|s| (s.name.clone(), s.description.clone()))
-            .collect();
-
-        let agents_md = config.agents_md_path()
-            .and_then(|p| std::fs::read_to_string(p).ok());
-
-        build_context(
-            &ticket,
-            &context_repo,
-            llm_cfg,
-            config,
-            skill_ctx.as_ref(),
-            &subagent_descs,
-            agents_md.as_deref(),
-        )
+    let skill_ctx = if !all_skills.is_empty() {
+        let matched = match_skills(&all_skills, &ticket.summary, &ctx.logger);
+        Some(SkillContext {
+            available: all_skills.iter().map(|s| (s.name.clone(), s.description.clone())).collect(),
+            active: matched.iter().map(|s| (s.name.clone(), s.body.clone())).collect(),
+        })
+    } else {
+        None
     };
 
-    let model = client.completion_model(&llm_cfg.model);
+    let subagent_descs: Vec<(String, String)> = ctx.config.subagents.iter()
+        .map(|s| (s.name.clone(), s.description.clone()))
+        .collect();
 
-    // Choose tool set based on whether subagents are configured
-    let tools = if config.subagents.is_empty() {
+    let agents_md = ctx.config.agents_md_path()
+        .and_then(|p| std::fs::read_to_string(p).ok());
+
+    let ctx_msg = build_context(
+        &ticket,
+        &context_repo,
+        ctx.llm_cfg,
+        ctx.config,
+        skill_ctx.as_ref(),
+        &subagent_descs,
+        agents_md.as_deref(),
+    );
+
+    let model = client.completion_model(&ctx.llm_cfg.model);
+    let tools = if ctx.config.subagents.is_empty() {
         all_tool_definitions()
     } else {
-        let main_agent_tools = vec![
-            "comment".to_string(),
-            "dispatch".to_string(),
-            "skip".to_string(),
-            "done".to_string(),
-            "compact".to_string(),
-            "todos".to_string(),
-            "memory_list".to_string(),
-            "memory_read".to_string(),
-            "memory_write".to_string(),
-            "memory_search".to_string(),
-        ];
-        tool_definitions_for(&main_agent_tools)
+        tool_definitions_for(tools::MAIN_TOOLS)
     };
+    let max_actions = ctx.llm_cfg.max_actions_per_ticket();
 
-    let max_actions = llm_cfg.max_actions_per_ticket();
-
-    logger.info(&format!("[agent] processing ticket {ticket_id} (max_actions={max_actions}, dry_run={dry_run})"));
-    if dry_run {
+    ctx.logger.info(&format!("[agent] processing ticket {ticket_id} (max_actions={max_actions}, dry_run={})", ctx.dry_run));
+    if ctx.dry_run {
         println!("[dry-run] processing ticket {ticket_id}");
     }
 
-    // Build board, compaction store, todo store, and tool context once before
-    // the loop — these are re-used across every iteration.
-    let tool_board = build_board(config, Arc::clone(&logger)).await?;
-    let tool_compaction = CompactionStore::open(&db_path)?;
-    let tool_todos = TodoStore::open(&db_path)?;
-    let tool_ctx = ToolContext {
+    let tool_ctx = Arc::new(ToolContext {
         ticket_id: ticket_id.to_string(),
         agent_scope: "main".to_string(),
-        board: tool_board,
-        compaction_store: tool_compaction,
-        todo_store: tool_todos,
+        board,
+        compaction_store,
+        todo_store: TodoStore::open(&db_path)?,
         context_repo: context_repo.clone(),
-        dry_run,
-        logger: Arc::clone(&logger),
-        workspace: config.workspace_base_path().map(WorkspaceStore::new),
-    };
-    let tool_ctx = Arc::new(tool_ctx);
+        dry_run: ctx.dry_run,
+        logger: Arc::clone(&ctx.logger),
+        workspace: ctx.config.workspace_base_path().map(WorkspaceStore::new),
+    });
 
     let mut history: Vec<Message> = vec![
-        Message::system(ctx_msg.system.clone()),
-        Message::user(ctx_msg.user.clone()),
+        Message::system(ctx_msg.system),
+        Message::user(ctx_msg.user),
     ];
 
-    let dispatch_logger = Arc::clone(&logger);
-    let dispatch_tool_ctx = Arc::clone(&tool_ctx);
-    let dispatch_ticket_id = ticket_id.to_string();
-    let dispatch_dry_run = dry_run;
-    let dispatch_config: Arc<AppConfig> = Arc::new((*config).clone());
     let dispatch_ticket = Arc::new(ticket.clone());
-    let (_, _last_text) = loop_runner::run_llm_loop(
+    let dispatch_tool_ctx = Arc::clone(&tool_ctx);
+    let dispatch_logger = Arc::clone(&ctx.logger);
+    let dispatch_metrics = Arc::clone(&ctx.metrics);
+    let dispatch_ticket_id = ticket_id.to_string();
+    let dispatch_dry_run = ctx.dry_run;
+    let dispatch_config = Arc::new((*ctx.config).clone());
+    let (loop_outcome, _last_text) = loop_runner::run_llm_loop(
         &model,
         &mut history,
         tools,
         max_actions,
+        Arc::clone(&ctx.metrics),
+        &ctx.llm_cfg.model,
+        &ctx.llm_cfg.provider,
+        "main",
         move |name, args, _choices| {
             let logger = Arc::clone(&dispatch_logger);
             let ctx = Arc::clone(&dispatch_tool_ctx);
@@ -237,16 +372,23 @@ where
             let dry_run_local = dispatch_dry_run;
             let cfg = Arc::clone(&dispatch_config);
             let tkt = Arc::clone(&dispatch_ticket);
+            let m = Arc::clone(&dispatch_metrics);
             async move {
                 logger.info(&format!("[agent] ticket {ticket_id}: calling tool '{name_str}' args={args}"));
                 if dry_run_local {
                     println!("[dry-run] would call tool '{name_str}' with args: {args}");
                 }
                 let result = if name_str == "dispatch" {
-                    handle_dispatch_tool(&args, &tkt, dry_run_local, client, cfg.as_ref(), Arc::clone(&logger)).await
+                    handle_dispatch_tool(&args, &tkt, dry_run_local, client, cfg.as_ref(), Arc::clone(&logger), Arc::clone(&m)).await
                 } else {
                     dispatch(&name_str, &args, &ctx).await
                 };
+                let call_outcome = if result.starts_with("error:") {
+                    ToolOutcome::Error
+                } else {
+                    ToolOutcome::Ok
+                };
+                m.record_tool_call(&name_str, ToolScope::Main, call_outcome);
                 logger.debug(&format!("[agent] ticket {ticket_id}: tool '{name_str}' result={result}"));
                 if is_terminal {
                     logger.info(&format!("[agent] ticket {ticket_id}: terminal tool called, ending cycle"));
@@ -257,73 +399,51 @@ where
     )
     .await?;
 
-    // Inspect history to count actions and detect `done` (sleep-time trigger).
-    let mut action_count = 0usize;
-    let mut did_done = false;
-    for msg in &history {
-        match msg {
-            Message::User { content } => {
-                for c in content.iter() {
-                    let s = serde_json::to_string(c).unwrap_or_default();
-                    if s.contains("\"type\":\"toolresult\"")
-                        || s.contains("\"type\":\"tool_result\"")
-                        || s.contains("tool_call_id")
-                    {
-                        action_count += 1;
-                    }
-                }
-            }
-            Message::Assistant { content, .. } => {
-                for c in content.iter() {
-                    if let rig_core::completion::AssistantContent::ToolCall(tc) = c {
-                        if tc.function.name == "done" {
-                            did_done = true;
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
+    let processing_outcome = TicketProcessingOutcome::from_loop_outcome(loop_outcome);
+
+    let (action_count, did_done) = count_actions_and_detect_done(&history);
     if action_count > 0 {
-        logger.info(&format!("[agent] ticket {ticket_id}: took {action_count} action(s)"));
+        ctx.logger.info(&format!("[agent] ticket {ticket_id}: took {action_count} action(s)"));
     } else {
-        logger.info(&format!("[agent] ticket {ticket_id}: no actions taken"));
+        ctx.logger.info(&format!("[agent] ticket {ticket_id}: no actions taken"));
     }
 
-    if did_done && !dry_run {
-        let sleep_repo = ContextRepository::open(&config.memory_repo_path(), &config.agent.name);
-        let sleep_ticket = ticket.clone();
-        let sleep_config_threshold_files = config.defrag_file_threshold();
-        let sleep_config_threshold_kb = config.defrag_size_threshold_kb();
-        let sleep_logger = Arc::clone(&logger);
-        if let Ok(repo) = sleep_repo {
-            let sleep_client = client;
-            let sleep_llm_model = llm_cfg.model.clone();
-            if let Err(e) = run_sleep_time_agent(
-                sleep_client,
-                &sleep_llm_model,
-                &sleep_ticket,
-                repo,
-                sleep_config_threshold_files,
-                sleep_config_threshold_kb,
-                &config.agent.name,
-                &config.memory_repo_path(),
-                Arc::clone(&sleep_logger),
-            ).await {
-                sleep_logger.error(&format!("[sleep-time] reflection error for {ticket_id}: {e}"));
+    if did_done && !ctx.dry_run {
+        if let Ok(repo) = ContextRepository::open(&ctx.config.memory_repo_path(), &ctx.config.agent.name) {
+            if let Err(e) = run_sleep_time_agent(ctx, client, &ticket, repo).await {
+                ctx.logger.error(&format!("[sleep-time] reflection error for {ticket_id}: {e}"));
             }
         }
     }
 
-    Ok(())
-}async fn handle_dispatch_tool<C>(
+    Ok(processing_outcome)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TicketProcessingOutcome {
+    Success,
+    Skipped,
+    CapReached,
+}
+
+impl TicketProcessingOutcome {
+    pub fn from_loop_outcome(outcome: loop_runner::LoopOutcome) -> Self {
+        match outcome {
+            loop_runner::LoopOutcome::NoToolCalls => TicketProcessingOutcome::Skipped,
+            loop_runner::LoopOutcome::CapReached => TicketProcessingOutcome::CapReached,
+            loop_runner::LoopOutcome::Terminal => TicketProcessingOutcome::Success,
+        }
+    }
+}
+
+async fn handle_dispatch_tool<C>(
     args: &str,
     ticket: &crate::models::Ticket,
     dry_run: bool,
     client: &C,
     config: &AppConfig,
     logger: Arc<Logger>,
+    metrics: Arc<AgentMetrics>,
 ) -> String
 where
     C: CompletionClient,
@@ -341,7 +461,7 @@ where
         Some(s) => s,
         None => return format!("error: no subagent named '{}' is configured", parsed.subagent),
     };
-    run_subagent_loop(client, sub_cfg, ticket, &parsed.task, dry_run, config, logger).await
+    run_subagent_loop(client, sub_cfg, ticket, &parsed.task, dry_run, config, logger, Arc::clone(&metrics)).await
 }
 
 async fn run_subagent_loop<C>(
@@ -352,6 +472,7 @@ async fn run_subagent_loop<C>(
     dry_run: bool,
     config: &AppConfig,
     logger: Arc<Logger>,
+    metrics: Arc<AgentMetrics>,
 ) -> String
 where
     C: CompletionClient,
@@ -396,19 +517,14 @@ where
     let model = client.completion_model(model_name);
     let max_actions = sub_cfg.max_actions.unwrap_or_else(|| llm_cfg.max_actions_per_ticket());
 
-    let mut tool_names = sub_cfg.tools.clone();
-    if !tool_names.contains(&"return".to_string()) {
-        tool_names.push("return".to_string());
-    }
-    if !tool_names.contains(&"todos".to_string()) {
-        tool_names.push("todos".to_string());
-    }
-    for mem_tool in &["memory_list", "memory_read", "memory_write", "memory_search"] {
-        if !tool_names.contains(&mem_tool.to_string()) {
-            tool_names.push(mem_tool.to_string());
+    let mut tool_names: Vec<String> = sub_cfg.tools.clone();
+    let need: &[&str] = &["return", "todos", "memory_list", "memory_read", "memory_write", "memory_search"];
+    for tool in need {
+        if !tool_names.iter().any(|n| n == tool) {
+            tool_names.push((*tool).to_string());
         }
     }
-    let tools = tool_definitions_for(&tool_names);
+    let tools = tool_definitions_for(&tool_names.iter().map(String::as_str).collect::<Vec<_>>());
 
     logger.info(&format!(
         "[subagent:{}] starting for ticket {} (max_actions={max_actions})",
@@ -450,20 +566,33 @@ where
     let subagent_name = sub_cfg.name.clone();
     let dispatch_logger = Arc::clone(&logger);
     let dispatch_tool_ctx = Arc::clone(&tool_ctx);
-    let mut last_return_value: Option<String> = None;
+    let dispatch_metrics = Arc::clone(&metrics);
+    let dispatch_subagent_name = subagent_name.clone();
+    let sub_provider = llm_cfg.provider.clone();
     let (outcome, last_text) = loop_runner::run_llm_loop(
         &model,
         &mut history,
         tools,
         max_actions,
+        Arc::clone(&metrics),
+        model_name,
+        &sub_provider,
+        &subagent_name,
         move |name, args, _choices| {
             let logger = Arc::clone(&dispatch_logger);
             let ctx = Arc::clone(&dispatch_tool_ctx);
             let is_return = name == "return";
-            let sub_name = subagent_name.clone();
+            let sub_name = dispatch_subagent_name.clone();
+            let m = Arc::clone(&dispatch_metrics);
             async move {
                 logger.info(&format!("[subagent:{sub_name}] calling tool '{name}' args={args}"));
                 let result = dispatch(&name, &args, &ctx).await;
+                let call_outcome = if result.starts_with("error:") {
+                    ToolOutcome::Error
+                } else {
+                    ToolOutcome::Ok
+                };
+                m.record_tool_call(&name, ToolScope::Subagent, call_outcome);
                 logger.debug(&format!("[subagent:{sub_name}] tool '{name}' result={result}"));
                 (result, is_return)
             }
@@ -474,18 +603,7 @@ where
 
     match outcome {
         loop_runner::LoopOutcome::Terminal => {
-            // The last tool call in the terminal turn was `return`; recover the
-            // return value from the just-appended history entry.
-            if let Some(Message::User { content }) = history.last() {
-                if let Some(c) = content.iter().next() {
-                    let s = serde_json::to_string(c).unwrap_or_default();
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&s) {
-                        if let Some(text) = parsed.get("text").and_then(|v| v.as_str()) {
-                            last_return_value = Some(text.to_string());
-                        }
-                    }
-                }
-            }
+            let last_return_value = history.last().and_then(extract_return_value);
             logger.info(&format!("[subagent:{}] return called, finishing", sub_cfg.name));
             last_return_value.unwrap_or(last_text)
         }
@@ -500,23 +618,20 @@ where
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_sleep_time_agent<C>(
+    ctx: &RunContext<'_>,
     client: &C,
-    model_name: &str,
     ticket: &crate::models::Ticket,
     context_repo: ContextRepository,
-    defrag_file_threshold: usize,
-    defrag_size_threshold_kb: u64,
-    agent_name: &str,
-    memory_repo_path: &std::path::Path,
-    logger: Arc<Logger>,
 ) -> Result<(), OrgaError>
 where
     C: CompletionClient + Sync,
     C::CompletionModel: CompletionModel + Clone + 'static,
 {
-    logger.info(&format!("[sleep-time] reflecting on ticket {}", ticket.summary.id));
+    ctx.logger.info(&format!("[sleep-time] reflecting on ticket {}", ticket.summary.id));
+    let model_name = &ctx.llm_cfg.model;
+    let provider = &ctx.llm_cfg.provider;
+    let memory_repo_path = ctx.config.memory_repo_path();
 
     let entries = context_repo.list().unwrap_or_default();
     let tree_index = if entries.is_empty() {
@@ -528,16 +643,7 @@ where
             .join("\n")
     };
 
-    let system = format!(
-        "You are a memory reflection agent. Your job is to review a completed ticket and persist \
-any cross-ticket-valuable knowledge into the context repository. Focus on: recurring themes, \
-architectural patterns, team conventions, people preferences, and recurring problems.\n\n\
-Do NOT save ticket-specific facts. Only save information that would help on FUTURE tickets.\n\n\
-Available tools: memory_list, memory_read, memory_write.\n\
-Use memory_write to create or update topic files with YAML frontmatter (description: field).\n\
-When done, stop — do not call any other tools.\n\n\
-Current repository index:\n{tree_index}"
-    );
+    let system = SLEEP_SYSTEM_PROMPT.replace("{tree_index}", &tree_index);
 
     let user = format!(
         "Ticket just completed: {}\n\nDescription: {}\n\n## Comments\n{}\n\nReflect and persist any valuable cross-ticket learnings.",
@@ -551,9 +657,9 @@ Current repository index:\n{tree_index}"
 
     let model = client.completion_model(model_name);
     let sleep_tools = tool_definitions_for(&[
-        "memory_list".to_string(),
-        "memory_read".to_string(),
-        "memory_write".to_string(),
+        "memory_list",
+        "memory_read",
+        "memory_write",
     ]);
 
     let mut history: Vec<Message> = vec![
@@ -561,21 +667,33 @@ Current repository index:\n{tree_index}"
         Message::user(user),
     ];
 
-    let dispatch_logger = Arc::clone(&logger);
+    let dispatch_logger = Arc::clone(&ctx.logger);
+    let dispatch_metrics = Arc::clone(&ctx.metrics);
     let (outcome, _last_text) = loop_runner::run_llm_loop(
         &model,
         &mut history,
         sleep_tools,
         10,
+        Arc::clone(&ctx.metrics),
+        model_name,
+        provider,
+        "sleep",
         move |name, args, _choices| {
             let logger = Arc::clone(&dispatch_logger);
             let repo_clone = context_repo.clone();
+            let m = Arc::clone(&dispatch_metrics);
             async move {
                 let ctx = tools::SleepToolContext {
                     context_repo: repo_clone,
                     logger: Arc::clone(&logger),
                 };
                 let result = tools::dispatch_sleep_tool(&name, &args, &ctx).await;
+                let call_outcome = if result.starts_with("error:") {
+                    ToolOutcome::Error
+                } else {
+                    ToolOutcome::Ok
+                };
+                m.record_tool_call(&name, ToolScope::Sleep, call_outcome);
                 logger.debug(&format!("[sleep-time] tool '{name}' result={result}"));
                 (result, false)
             }
@@ -583,58 +701,48 @@ Current repository index:\n{tree_index}"
     )
     .await?;
 
-    logger.debug(&format!("[sleep-time] loop ended with {:?}", outcome));
+    ctx.logger.debug(&format!("[sleep-time] loop ended with {:?}", outcome));
 
     // Check thresholds and run defrag if needed
-    let fresh_repo = ContextRepository::open(memory_repo_path, agent_name)?;
+    let fresh_repo = ContextRepository::open(&memory_repo_path, &ctx.config.agent.name)?;
     if let Ok(stats) = fresh_repo.repo_stats() {
-        if stats.file_count >= defrag_file_threshold || stats.total_size_kb >= defrag_size_threshold_kb {
-            logger.info("[sleep-time] threshold exceeded, running defrag");
-            if let Err(e) = run_defrag_agent(client, model_name, memory_repo_path, agent_name, Arc::clone(&logger)).await {
-                logger.error(&format!("[sleep-time] defrag error: {e}"));
+        if stats.file_count >= ctx.config.defrag_file_threshold()
+            || stats.total_size_kb >= ctx.config.defrag_size_threshold_kb()
+        {
+            ctx.logger.info("[sleep-time] threshold exceeded, running defrag");
+            if let Err(e) = run_defrag_agent(ctx, client).await {
+                ctx.logger.error(&format!("[sleep-time] defrag error: {e}"));
             }
         }
     }
 
-    logger.info(&format!("[sleep-time] reflection complete for {}", ticket.summary.id));
+    ctx.logger.info(&format!("[sleep-time] reflection complete for {}", ticket.summary.id));
     Ok(())
 }
 
 async fn run_defrag_agent<C>(
+    ctx: &RunContext<'_>,
     client: &C,
-    model_name: &str,
-    memory_repo_path: &std::path::Path,
-    agent_name: &str,
-    logger: Arc<Logger>,
 ) -> Result<(), OrgaError>
 where
     C: CompletionClient + Sync,
     C::CompletionModel: CompletionModel + Clone + 'static,
 {
-    logger.info("[defrag] starting defragmentation pass");
+    ctx.logger.info("[defrag] starting defragmentation pass");
 
-    let repo = ContextRepository::open(memory_repo_path, agent_name)?;
+    let memory_repo_path = ctx.config.memory_repo_path();
+    let agent_name = &ctx.config.agent.name;
+    let model_name = &ctx.llm_cfg.model;
+    let provider = &ctx.llm_cfg.provider;
+
+    let repo = ContextRepository::open(&memory_repo_path, agent_name)?;
     let entries = repo.list().unwrap_or_default();
     let tree = entries.iter()
         .map(|e| if e.description.is_empty() { e.path.clone() } else { format!("{} — {}", e.path, e.description) })
         .collect::<Vec<_>>()
         .join("\n");
 
-    let system = format!(
-        "You are a memory cleanup agent. Your job is to reduce clutter in the context repository.\n\n\
-Your tasks:\n\
-1. Split files that cover multiple distinct topics (aim for 15-50 lines per file)\n\
-2. Merge files with heavily overlapping content — write the merged result, then delete the originals using memory_delete\n\
-3. Delete files that are redundant (all their content exists in other files)\n\n\
-Rules:\n\
-- Do NOT rename folders or restructure the directory hierarchy\n\
-- Do NOT update frontmatter descriptions unless directly related to a merge/split\n\
-- After merging two files into one, always delete the originals with memory_delete\n\
-- If memory_delete returns an error (content not covered elsewhere), do not delete that file\n\n\
-Available tools: memory_list, memory_read, memory_write, memory_delete.\n\
-When done cleaning up, stop.\n\n\
-Current repository:\n{tree}"
-    );
+    let system = DEFRAG_SYSTEM_PROMPT.replace("{tree}", &tree);
 
     let model = client.completion_model(model_name);
     let defrag_tools = tools::defrag_tool_definitions();
@@ -644,21 +752,33 @@ Current repository:\n{tree}"
         Message::user("Please clean up the context repository now.".to_string()),
     ];
 
-    let dispatch_logger = Arc::clone(&logger);
+    let dispatch_logger = Arc::clone(&ctx.logger);
+    let dispatch_metrics = Arc::clone(&ctx.metrics);
     let (outcome, _last_text) = loop_runner::run_llm_loop(
         &model,
         &mut history,
         defrag_tools,
         20,
+        Arc::clone(&ctx.metrics),
+        model_name,
+        provider,
+        "defrag",
         move |name, args, _choices| {
             let logger = Arc::clone(&dispatch_logger);
             let repo_clone = repo.clone();
+            let m = Arc::clone(&dispatch_metrics);
             async move {
                 let ctx = tools::SleepToolContext {
                     context_repo: repo_clone,
                     logger: Arc::clone(&logger),
                 };
                 let result = tools::dispatch_sleep_tool(&name, &args, &ctx).await;
+                let call_outcome = if result.starts_with("error:") {
+                    ToolOutcome::Error
+                } else {
+                    ToolOutcome::Ok
+                };
+                m.record_tool_call(&name, ToolScope::Sleep, call_outcome);
                 logger.debug(&format!("[defrag] tool '{name}' result={result}"));
                 (result, false)
             }
@@ -666,14 +786,15 @@ Current repository:\n{tree}"
     )
     .await?;
 
-    logger.debug(&format!("[defrag] loop ended with {:?}", outcome));
-    logger.info("[defrag] defragmentation complete");
+    ctx.logger.debug(&format!("[defrag] loop ended with {:?}", outcome));
+    ctx.logger.info("[defrag] defragmentation complete");
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use rig_core::completion::Message;
+    use rig_core::completion::message::UserContent;
 
     fn history_entry_for(tool_name: &str, tool_call_id: &str, result: &str) -> Message {
         if tool_name == "dispatch" {
@@ -685,10 +806,7 @@ mod tests {
 
     fn is_tool_result_message(msg: &Message) -> bool {
         if let Message::User { content } = msg {
-            content.iter().any(|c| {
-                let s = serde_json::to_string(c).unwrap_or_default();
-                s.contains("\"type\":\"toolresult\"") || s.contains("\"type\":\"tool_result\"") || s.contains("tool_call_id")
-            })
+            content.iter().any(|c| matches!(c, UserContent::ToolResult(_)))
         } else {
             false
         }
@@ -696,10 +814,7 @@ mod tests {
 
     fn is_plain_text_user_message(msg: &Message) -> bool {
         if let Message::User { content } = msg {
-            content.iter().any(|c| {
-                let s = serde_json::to_string(c).unwrap_or_default();
-                s.contains("\"type\":\"text\"")
-            })
+            content.iter().any(|c| matches!(c, UserContent::Text(_)))
         } else {
             false
         }
@@ -722,5 +837,34 @@ mod tests {
     fn done_result_is_tool_result_message() {
         let msg = history_entry_for("done", "call_main_done", "done");
         assert!(is_tool_result_message(&msg), "done should produce a tool_result message");
+    }
+
+    #[tokio::test]
+    async fn bind_metrics_server_serves_text_on_metrics() {
+        use crate::logging::Logger;
+        use crate::metrics::AgentMetrics;
+        use std::sync::Arc;
+        // Pick a high random port; if it's in use, this test is a no-op (env-dependent).
+        let addr = "127.0.0.1:39191";
+        let logger = Arc::new(Logger::new(std::path::Path::new("/dev/null"), false));
+        let metrics = Arc::new(AgentMetrics::new());
+        if let Err(e) = super::bind_metrics_server(addr, Arc::clone(&metrics), Arc::clone(&logger)).await {
+            eprintln!("bind_metrics_server failed (port may be in use): {e}");
+            return;
+        }
+        // Give the spawned server a moment to start accepting.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // Touch a metric so it appears in encode output.
+        metrics.record_llm_request("m", "p", "a");
+        let resp = match reqwest::get(format!("http://{addr}/metrics")).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("get /metrics failed: {e}");
+                return;
+            }
+        };
+        assert!(resp.status().is_success(), "/metrics non-2xx");
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("orga_llm_requests_total"), "metrics body missing counter: {body}");
     }
 }

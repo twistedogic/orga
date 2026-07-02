@@ -56,10 +56,15 @@ pub fn is_terminal_tool(tool_name: &str) -> bool {
     matches!(tool_name, "done" | "skip" | "return")
 }
 
-pub fn tool_definitions_for(names: &[String]) -> Vec<ToolDefinition> {
+pub fn tool_definitions_for(names: &[&str]) -> Vec<ToolDefinition> {
     let all = all_tool_definitions();
-    all.into_iter().filter(|t| names.iter().any(|n| n == &t.name)).collect()
+    all.into_iter().filter(|t| names.iter().any(|n| *n == t.name)).collect()
 }
+
+pub const MAIN_TOOLS: &[&str] = &[
+    "comment", "dispatch", "skip", "done", "compact", "todos",
+    "memory_list", "memory_read", "memory_write", "memory_search",
+];
 
 #[derive(Deserialize)]
 struct CommentArgs {
@@ -568,9 +573,9 @@ pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolCon
 
 pub fn defrag_tool_definitions() -> Vec<ToolDefinition> {
     let mut defs = tool_definitions_for(&[
-        "memory_list".to_string(),
-        "memory_read".to_string(),
-        "memory_write".to_string(),
+        "memory_list",
+        "memory_read",
+        "memory_write",
     ]);
     defs.push(ToolDefinition {
         name: "memory_delete".to_string(),
@@ -690,7 +695,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_definitions_for_returns_subset() {
-        let names = vec!["comment".to_string(), "done".to_string()];
+        let names = ["comment", "done"];
         let defs = tool_definitions_for(&names);
         assert_eq!(defs.len(), 2);
         assert!(defs.iter().any(|d| d.name == "comment"));

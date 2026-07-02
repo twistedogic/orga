@@ -1,9 +1,12 @@
 use std::future::Future;
+use std::sync::Arc;
+use std::time::Instant;
 
 use rig_core::completion::{AssistantContent, CompletionModel, CompletionRequest, Message, ToolDefinition};
 use rig_core::one_or_many::OneOrMany;
 
-use crate::error::OrgaError;
+use crate::error::{OrgaError, classify_completion_error};
+use crate::metrics::AgentMetrics;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopOutcome {
@@ -49,6 +52,10 @@ pub async fn run_llm_loop<M, F, Fut>(
     history: &mut Vec<Message>,
     tools: Vec<ToolDefinition>,
     max_steps: usize,
+    metrics: Arc<AgentMetrics>,
+    model_label: &str,
+    provider: &str,
+    agent: &str,
     mut dispatch: F,
 ) -> Result<(LoopOutcome, String), OrgaError>
 where
@@ -64,10 +71,22 @@ where
         }
 
         let req = make_completion_request(history, tools.clone());
-        let response = model
-            .completion(req)
-            .await
-            .map_err(|e| OrgaError::BackendError(format!("LLM completion error: {e}")))?;
+        let started = Instant::now();
+        let response = model.completion(req).await;
+        let elapsed = started.elapsed();
+        metrics.record_llm_duration(model_label, provider, agent, elapsed);
+
+        let response = match response {
+            Ok(r) => r,
+            Err(err) => {
+                let (kind, _) = classify_completion_error(&err);
+                metrics.record_llm_error(model_label, provider, agent, kind);
+                return Err(err.into());
+            }
+        };
+
+        metrics.record_llm_request(model_label, provider, agent);
+        metrics.record_tokens(model_label, provider, agent, &response.usage);
 
         let choices: Vec<AssistantContent> = response.choice.into_iter().collect();
         last_text = choices
