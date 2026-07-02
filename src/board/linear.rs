@@ -177,24 +177,9 @@ impl LinearBackend {
             .nodes
             .into_iter()
             .map(|child| {
-                let completed = child
-                    .state
-                    .as_ref()
-                    .map(|s| {
-                        s.state_type.as_deref() == Some("completed")
-                            || s.state_type.as_deref() == Some("cancelled")
-                    })
-                    .unwrap_or(false);
-                let list_name = child
-                    .state
-                    .as_ref()
-                    .map(|s| s.name.clone())
-                    .unwrap_or_default();
-                let list_id = child
-                    .state
-                    .as_ref()
-                    .map(|s| s.id.clone())
-                    .unwrap_or_default();
+                let completed = is_completed_state(&child.state);
+                let list_name = linear_state_name(&child.state);
+                let list_id = linear_state_id(&child.state);
                 TicketSummary {
                     id: child.id,
                     title: child.title,
@@ -223,11 +208,7 @@ impl LinearBackend {
                 Some(Comment {
                     id: c.id,
                     at,
-                    who: Member {
-                        id: user.id.clone(),
-                        username: user.display_name.clone(),
-                        full_name: user.display_name,
-                    },
+                    who: member_from_user(&user),
                     content,
                     agent_name,
                 })
@@ -240,49 +221,19 @@ impl LinearBackend {
             .map(|c| c.agent_name.is_some())
             .unwrap_or(false);
 
-        let creator = issue.creator.map(|u| Member {
-            id: u.id.clone(),
-            username: u.display_name.clone(),
-            full_name: u.display_name,
-        });
+        let creator = issue.creator.as_ref().map(member_from_user);
 
         let assignees: Vec<Member> = issue
             .assignee
+            .map(|u| member_from_user(&u))
             .into_iter()
-            .map(|u| Member {
-                id: u.id.clone(),
-                username: u.display_name.clone(),
-                full_name: u.display_name,
-            })
             .collect();
 
-        let state_name = issue
-            .state
-            .as_ref()
-            .map(|s| s.name.clone())
-            .unwrap_or_default();
-        let state_id = issue
-            .state
-            .as_ref()
-            .map(|s| s.id.clone())
-            .unwrap_or_default();
-        let completed = issue
-            .state
-            .as_ref()
-            .map(|s| {
-                s.state_type.as_deref() == Some("completed")
-                    || s.state_type.as_deref() == Some("cancelled")
-            })
-            .unwrap_or(false);
+        let state_name = linear_state_name(&issue.state);
+        let state_id = linear_state_id(&issue.state);
+        let completed = is_completed_state(&issue.state);
 
-        let labels: Vec<String> = issue
-            .labels
-            .unwrap_or_else(|| Nodes { nodes: vec![] })
-            .nodes
-            .into_iter()
-            .map(|l| l.name)
-            .filter(|n| !n.is_empty())
-            .collect();
+        let labels = linear_label_names(issue.labels.as_ref());
 
         Ticket {
             summary: TicketSummary {
@@ -306,30 +257,11 @@ impl LinearBackend {
     }
 
     fn linear_issue_to_summary(&self, issue: &LinearIssueSummary) -> TicketSummary {
-        let state_name = issue
-            .state
-            .as_ref()
-            .map(|s| s.name.clone())
-            .unwrap_or_default();
-        let state_id = issue
-            .state
-            .as_ref()
-            .map(|s| s.id.clone())
-            .unwrap_or_default();
-        let completed = issue
-            .state
-            .as_ref()
-            .map(|s| {
-                s.state_type.as_deref() == Some("completed")
-                    || s.state_type.as_deref() == Some("cancelled")
-            })
-            .unwrap_or(false);
+        let state_name = linear_state_name(&issue.state);
+        let state_id = linear_state_id(&issue.state);
+        let completed = is_completed_state(&issue.state);
 
-        let creator = issue.creator.as_ref().map(|u| Member {
-            id: u.id.clone(),
-            username: u.display_name.clone(),
-            full_name: u.display_name.clone(),
-        });
+        let creator = issue.creator.as_ref().map(member_from_user);
 
         let last_commenter_is_agent = {
             let mut dated: Vec<(DateTime<chrono::Utc>, &LinearCommentSummary)> = issue
@@ -353,17 +285,7 @@ impl LinearBackend {
                 .is_some()
         };
 
-        let labels: Vec<String> = issue
-            .labels
-            .as_ref()
-            .map(|n| {
-                n.nodes
-                    .iter()
-                    .map(|l| l.name.clone())
-                    .filter(|n| !n.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let labels = linear_label_names(issue.labels.as_ref());
 
         TicketSummary {
             id: issue.id.clone(),
@@ -545,6 +467,47 @@ impl LinearBackend {
         let resp: Resp = self.gql(&query, vars).await?;
         Ok(resp.issue_create.issue.id)
     }
+}
+
+/// Build a `Member` from a `LinearUser` — single source of truth for the
+/// `id, displayName, displayName` triple that both ticket-shape converters
+/// built by hand.
+fn member_from_user(user: &LinearUser) -> Member {
+    Member {
+        id: user.id.clone(),
+        username: user.display_name.clone(),
+        full_name: user.display_name.clone(),
+    }
+}
+
+fn linear_state_name(state: &Option<LinearState>) -> String {
+    state.as_ref().map(|s| s.name.clone()).unwrap_or_default()
+}
+
+fn linear_state_id(state: &Option<LinearState>) -> String {
+    state.as_ref().map(|s| s.id.clone()).unwrap_or_default()
+}
+
+fn is_completed_state(state: &Option<LinearState>) -> bool {
+    state
+        .as_ref()
+        .map(|s| {
+            s.state_type.as_deref() == Some("completed")
+                || s.state_type.as_deref() == Some("cancelled")
+        })
+        .unwrap_or(false)
+}
+
+fn linear_label_names(labels: Option<&Nodes<LinearLabel>>) -> Vec<String> {
+    labels
+        .map(|n| {
+            n.nodes
+                .iter()
+                .map(|l| l.name.clone())
+                .filter(|n| !n.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Deserialize)]
@@ -773,5 +736,82 @@ mod tests {
         let issue = make_full_issue(vec![]);
         let ticket = backend.linear_issue_to_ticket(issue);
         assert!(ticket.sub_tickets.is_empty());
+    }
+
+    fn make_state(id: &str, name: &str, kind: Option<&str>) -> LinearState {
+        LinearState {
+            id: id.into(),
+            name: name.into(),
+            state_type: kind.map(|s| s.to_string()),
+        }
+    }
+
+    fn make_user(id: &str, display_name: &str) -> LinearUser {
+        LinearUser {
+            id: id.into(),
+            display_name: display_name.into(),
+        }
+    }
+
+    #[test]
+    fn member_from_user_copies_id_and_display_name_to_all_fields() {
+        let m = member_from_user(&make_user("u1", "Alice"));
+        assert_eq!(m.id, "u1");
+        assert_eq!(m.username, "Alice");
+        assert_eq!(m.full_name, "Alice");
+    }
+
+    #[test]
+    fn linear_state_name_and_id_extract_from_present_state() {
+        let s = Some(make_state("s1", "Todo", Some("unstarted")));
+        assert_eq!(linear_state_name(&s), "Todo");
+        assert_eq!(linear_state_id(&s), "s1");
+    }
+
+    #[test]
+    fn linear_state_name_and_id_return_empty_for_none_state() {
+        let s: Option<LinearState> = None;
+        assert_eq!(linear_state_name(&s), "");
+        assert_eq!(linear_state_id(&s), "");
+    }
+
+    #[test]
+    fn is_completed_state_true_for_completed_and_cancelled() {
+        assert!(is_completed_state(&Some(make_state(
+            "s",
+            "x",
+            Some("completed")
+        ))));
+        assert!(is_completed_state(&Some(make_state(
+            "s",
+            "x",
+            Some("cancelled")
+        ))));
+        assert!(!is_completed_state(&Some(make_state(
+            "s",
+            "x",
+            Some("unstarted")
+        ))));
+        assert!(!is_completed_state(&Some(make_state("s", "x", None))));
+        assert!(!is_completed_state(&None));
+    }
+
+    #[test]
+    fn linear_label_names_filters_empty_and_handles_none() {
+        let labels = Nodes {
+            nodes: vec![
+                LinearLabel { name: "bug".into() },
+                LinearLabel { name: "".into() },
+                LinearLabel {
+                    name: "auth".into(),
+                },
+            ],
+        };
+        assert_eq!(
+            linear_label_names(Some(&labels)),
+            vec!["bug".to_string(), "auth".to_string()]
+        );
+        assert!(linear_label_names(None).is_empty());
+        assert!(linear_label_names(Some(&Nodes { nodes: vec![] })).is_empty());
     }
 }
