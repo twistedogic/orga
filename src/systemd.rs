@@ -14,7 +14,9 @@ pub fn install_service(system: bool, config_path: &str) -> Result<(), OrgaError>
 
     let bin_path = std::env::current_exe()
         .and_then(|p| p.canonicalize())
-        .map_err(|e| OrgaError::SystemdWriteFailed(format!("could not determine binary path: {e}")))?;
+        .map_err(|e| {
+            OrgaError::SystemdWriteFailed(format!("could not determine binary path: {e}"))
+        })?;
 
     let unit = generate_unit_file(bin_path.to_string_lossy().as_ref(), config_path, system);
 
@@ -25,12 +27,17 @@ pub fn install_service(system: bool, config_path: &str) -> Result<(), OrgaError>
         std::path::PathBuf::from(home).join(".config/systemd/user")
     };
 
-    fs::create_dir_all(&target_dir)
-        .map_err(|e| OrgaError::SystemdWriteFailed(format!("could not create directory {}: {e}", target_dir.display())))?;
+    fs::create_dir_all(&target_dir).map_err(|e| {
+        OrgaError::SystemdWriteFailed(format!(
+            "could not create directory {}: {e}",
+            target_dir.display()
+        ))
+    })?;
 
     let unit_path = target_dir.join("orga-agent.service");
-    fs::write(&unit_path, &unit)
-        .map_err(|e| OrgaError::SystemdWriteFailed(format!("could not write {}: {e}", unit_path.display())))?;
+    fs::write(&unit_path, &unit).map_err(|e| {
+        OrgaError::SystemdWriteFailed(format!("could not write {}: {e}", unit_path.display()))
+    })?;
 
     let reload_ok = reload_daemon(system);
 
@@ -57,7 +64,11 @@ pub fn install_service(system: bool, config_path: &str) -> Result<(), OrgaError>
 }
 
 pub fn generate_unit_file(bin_path: &str, config_path: &str, system: bool) -> String {
-    let wanted_by = if system { "multi-user.target" } else { "default.target" };
+    let wanted_by = if system {
+        "multi-user.target"
+    } else {
+        "default.target"
+    };
     format!(
         "[Unit]\n\
          Description=orga agent\n\
@@ -102,7 +113,11 @@ mod tests {
     #[test]
     fn test_generate_unit_file_user() {
         let unit = generate_unit_file("/usr/local/bin/orga", "/home/user/.orga/config.toml", false);
-        assert!(unit.contains("ExecStart=/usr/local/bin/orga --config /home/user/.orga/config.toml agent"));
+        assert!(
+            unit.contains(
+                "ExecStart=/usr/local/bin/orga --config /home/user/.orga/config.toml agent"
+            )
+        );
         assert!(unit.contains("WantedBy=default.target"));
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("RestartSec=30"));

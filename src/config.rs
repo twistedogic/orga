@@ -75,7 +75,10 @@ pub struct LoggingConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MetricsConfig {
-    #[serde(default = "default_metrics_listen_addr", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "default_metrics_listen_addr",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub listen_addr: Option<String>,
 }
 
@@ -85,9 +88,7 @@ fn default_metrics_listen_addr() -> Option<String> {
 
 impl MetricsConfig {
     pub fn listen_addr(&self) -> &str {
-        self.listen_addr
-            .as_deref()
-            .unwrap_or("127.0.0.1:9090")
+        self.listen_addr.as_deref().unwrap_or("127.0.0.1:9090")
     }
 }
 
@@ -112,7 +113,6 @@ impl LlmConfig {
     pub fn max_actions_per_ticket(&self) -> usize {
         self.max_actions_per_ticket.unwrap_or(10)
     }
-
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -148,11 +148,7 @@ impl AppConfig {
 
     pub fn load(path: &Path) -> Result<Self, OrgaError> {
         let content = fs::read_to_string(path).map_err(|e| {
-            OrgaError::ConfigError(format!(
-                "cannot read config at {}: {}",
-                path.display(),
-                e
-            ))
+            OrgaError::ConfigError(format!("cannot read config at {}: {}", path.display(), e))
         })?;
         let mut config: AppConfig = toml::from_str(&content)
             .map_err(|e| OrgaError::ConfigError(format!("invalid config: {e}")))?;
@@ -229,18 +225,20 @@ impl AppConfig {
         }
         if self.board.backend == "trello"
             && let Some(ref t) = self.trello
-                && t.board_id.is_empty() {
-                    return Err(OrgaError::ConfigError(
-                        "[trello] board_id is required".into(),
-                    ));
-                }
+            && t.board_id.is_empty()
+        {
+            return Err(OrgaError::ConfigError(
+                "[trello] board_id is required".into(),
+            ));
+        }
         if self.board.backend == "linear"
             && let Some(ref l) = self.linear
-                && l.team_id.is_empty() {
-                    return Err(OrgaError::ConfigError(
-                        "[linear] team_id is required".into(),
-                    ));
-                }
+            && l.team_id.is_empty()
+        {
+            return Err(OrgaError::ConfigError(
+                "[linear] team_id is required".into(),
+            ));
+        }
         if let Some(ref llm) = self.llm {
             const SUPPORTED_PROVIDERS: &[&str] = &["anthropic", "openai"];
             if !SUPPORTED_PROVIDERS.contains(&llm.provider.as_str()) {
@@ -251,14 +249,10 @@ impl AppConfig {
                 )));
             }
             if llm.api_key.is_empty() {
-                return Err(OrgaError::ConfigError(
-                    "[llm] api_key is required".into(),
-                ));
+                return Err(OrgaError::ConfigError("[llm] api_key is required".into()));
             }
             if llm.model.is_empty() {
-                return Err(OrgaError::ConfigError(
-                    "[llm] model is required".into(),
-                ));
+                return Err(OrgaError::ConfigError("[llm] model is required".into()));
             }
         }
         if let Some(ref m) = self.metrics {
@@ -272,10 +266,20 @@ impl AppConfig {
         }
         // Validate subagents
         const VALID_TOOLS: &[&str] = &[
-            "comment", "assign", "create_sub",
-            "compact", "done", "skip",
-            "dispatch", "return", "bash", "todos",
-            "memory_list", "memory_read", "memory_write", "memory_search",
+            "comment",
+            "assign",
+            "create_sub",
+            "compact",
+            "done",
+            "skip",
+            "dispatch",
+            "return",
+            "bash",
+            "todos",
+            "memory_list",
+            "memory_read",
+            "memory_write",
+            "memory_search",
         ];
         let mut seen_names = std::collections::HashSet::new();
         for sub in &self.subagents {
@@ -312,11 +316,7 @@ impl AppConfig {
             .as_ref()
             .and_then(|l| l.file.as_deref())
             .unwrap_or("~/.orga/orga.log");
-        let debug = self
-            .logging
-            .as_ref()
-            .and_then(|l| l.debug)
-            .unwrap_or(false);
+        let debug = self.logging.as_ref().and_then(|l| l.debug).unwrap_or(false);
         Logger::with_stdout(&expand_tilde(path), debug, stdout)
     }
 
@@ -352,10 +352,7 @@ impl AppConfig {
             })?;
         }
         fs::write(path, &toml).map_err(|e| {
-            OrgaError::ConfigError(format!(
-                "cannot write config to {}: {e}",
-                path.display()
-            ))
+            OrgaError::ConfigError(format!("cannot write config to {}: {e}", path.display()))
         })
     }
 
@@ -366,7 +363,6 @@ impl AppConfig {
     pub fn workspace_base_path(&self) -> Option<PathBuf> {
         self.workspace.as_ref().map(|w| expand_tilde(&w.path))
     }
-
 }
 
 fn default_config_path() -> PathBuf {
@@ -493,7 +489,10 @@ backend = "trello"
         let content = format!("{VALID_CONFIG}\n[logging]\nfile = \"/tmp/orga-test.log\"\n");
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
-        assert_eq!(cfg.logging.as_ref().unwrap().file.as_deref(), Some("/tmp/orga-test.log"));
+        assert_eq!(
+            cfg.logging.as_ref().unwrap().file.as_deref(),
+            Some("/tmp/orga-test.log")
+        );
     }
 
     #[test]
@@ -542,7 +541,10 @@ team_id = "team-xyz"
         let content = format!("{VALID_CONFIG}\n[metrics]\n");
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
-        assert_eq!(cfg.metrics_config().unwrap().listen_addr(), "127.0.0.1:9090");
+        assert_eq!(
+            cfg.metrics_config().unwrap().listen_addr(),
+            "127.0.0.1:9090"
+        );
     }
 
     #[test]
@@ -621,7 +623,8 @@ model = "claude-opus-4-5"
 
     #[test]
     fn llm_unknown_provider_fails() {
-        let content = VALID_LLM_CONFIG.replace("provider = \"anthropic\"", "provider = \"unknown\"");
+        let content =
+            VALID_LLM_CONFIG.replace("provider = \"anthropic\"", "provider = \"unknown\"");
         let f = write_config(&content);
         let err = AppConfig::load(f.path()).unwrap_err();
         assert!(err.to_string().contains("unsupported provider"));
@@ -665,7 +668,10 @@ model = "claude-opus-4-5"
         let content = format!("{VALID_LLM_CONFIG}endpoint = \"https://proxy.example.com/v1\"\n");
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
-        assert_eq!(cfg.llm.as_ref().unwrap().endpoint.as_deref(), Some("https://proxy.example.com/v1"));
+        assert_eq!(
+            cfg.llm.as_ref().unwrap().endpoint.as_deref(),
+            Some("https://proxy.example.com/v1")
+        );
     }
 
     #[test]
@@ -707,7 +713,9 @@ model = "claude-opus-4-5"
 
     #[test]
     fn subagent_config_parses_from_toml() {
-        let content = format!("{VALID_CONFIG}\n[[subagents]]\nname = \"researcher\"\ndescription = \"Does research\"\ntools = [\"comment\", \"done\"]\n");
+        let content = format!(
+            "{VALID_CONFIG}\n[[subagents]]\nname = \"researcher\"\ndescription = \"Does research\"\ntools = [\"comment\", \"done\"]\n"
+        );
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.subagents.len(), 1);
@@ -717,7 +725,9 @@ model = "claude-opus-4-5"
 
     #[test]
     fn subagent_config_with_optional_fields() {
-        let content = format!("{VALID_CONFIG}\n[[subagents]]\nname = \"drafter\"\ndescription = \"Drafts content\"\ntools = [\"comment\"]\nskills = [\"writing\"]\nmodel = \"gpt-4o\"\nmax_actions = 20\n");
+        let content = format!(
+            "{VALID_CONFIG}\n[[subagents]]\nname = \"drafter\"\ndescription = \"Drafts content\"\ntools = [\"comment\"]\nskills = [\"writing\"]\nmodel = \"gpt-4o\"\nmax_actions = 20\n"
+        );
         let f = write_config(&content);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.subagents[0].model.as_deref(), Some("gpt-4o"));
@@ -727,7 +737,9 @@ model = "claude-opus-4-5"
 
     #[test]
     fn duplicate_subagent_name_fails_validation() {
-        let content = format!("{VALID_CONFIG}\n[[subagents]]\nname = \"bot\"\ndescription = \"a\"\ntools = [\"done\"]\n[[subagents]]\nname = \"bot\"\ndescription = \"b\"\ntools = [\"done\"]\n");
+        let content = format!(
+            "{VALID_CONFIG}\n[[subagents]]\nname = \"bot\"\ndescription = \"a\"\ntools = [\"done\"]\n[[subagents]]\nname = \"bot\"\ndescription = \"b\"\ntools = [\"done\"]\n"
+        );
         let f = write_config(&content);
         let err = AppConfig::load(f.path()).unwrap_err();
         assert!(err.to_string().contains("duplicate subagent name"));
@@ -735,7 +747,9 @@ model = "claude-opus-4-5"
 
     #[test]
     fn unknown_tool_name_in_subagent_fails_validation() {
-        let content = format!("{VALID_CONFIG}\n[[subagents]]\nname = \"bot\"\ndescription = \"a\"\ntools = [\"fly\"]\n");
+        let content = format!(
+            "{VALID_CONFIG}\n[[subagents]]\nname = \"bot\"\ndescription = \"a\"\ntools = [\"fly\"]\n"
+        );
         let f = write_config(&content);
         let err = AppConfig::load(f.path()).unwrap_err();
         assert!(err.to_string().contains("unknown tool"));

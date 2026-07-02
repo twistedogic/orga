@@ -51,7 +51,13 @@ impl Board for MockBoard {
         Ok(())
     }
 
-    async fn create_sub(&self, parent_id: &str, title: &str, _description: Option<&str>, _list: Option<&str>) -> Result<Ticket, OrgaError> {
+    async fn create_sub(
+        &self,
+        parent_id: &str,
+        title: &str,
+        _description: Option<&str>,
+        _list: Option<&str>,
+    ) -> Result<Ticket, OrgaError> {
         let _parent = self.get_ticket(parent_id).await?;
         Ok(Ticket {
             summary: TicketSummary {
@@ -76,8 +82,14 @@ impl Board for MockBoard {
 
     async fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
         Ok(vec![
-            Column { id: "list-1".into(), name: "To Do".into() },
-            Column { id: "list-2".into(), name: "In Progress".into() },
+            Column {
+                id: "list-1".into(),
+                name: "To Do".into(),
+            },
+            Column {
+                id: "list-2".into(),
+                name: "In Progress".into(),
+            },
         ])
     }
 
@@ -87,7 +99,10 @@ impl Board for MockBoard {
 
     async fn return_ticket(&self, id: &str, _comment: Option<&str>) -> Result<(), OrgaError> {
         let ticket = self.get_ticket(id).await?;
-        ticket.summary.creator.ok_or_else(|| OrgaError::BackendError("ticket has no known creator".into()))?;
+        ticket
+            .summary
+            .creator
+            .ok_or_else(|| OrgaError::BackendError("ticket has no known creator".into()))?;
         Ok(())
     }
 }
@@ -198,7 +213,10 @@ async fn comment_empty_fails() {
 #[tokio::test]
 async fn create_sub_links_to_parent() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    let sub = board.create_sub("abc123", "Sub-task one", None, None).await.unwrap();
+    let sub = board
+        .create_sub("abc123", "Sub-task one", None, None)
+        .await
+        .unwrap();
     assert_eq!(sub.summary.title, "Sub-task one");
     assert_eq!(sub.summary.list_id, "list-1");
 }
@@ -335,7 +353,12 @@ async fn return_ticket_succeeds_with_creator() {
 #[tokio::test]
 async fn return_ticket_with_comment_succeeds() {
     let board = MockBoard::with_tickets(vec![sample_ticket()]);
-    assert!(board.return_ticket("abc123", Some("need more context")).await.is_ok());
+    assert!(
+        board
+            .return_ticket("abc123", Some("need more context"))
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -388,15 +411,17 @@ fn comment_agent_name_null_for_humans() {
 
 #[cfg(test)]
 mod live {
-    use std::sync::Arc;
     use orga::board::build_board;
     use orga::config::AppConfig;
+    use std::sync::Arc;
 
     async fn load_board() -> Box<dyn orga::board::Board> {
         let config_path = AppConfig::resolve_path(None);
         let config = AppConfig::load(&config_path).expect("failed to load config");
         let logger = Arc::new(config.logger());
-        build_board(&config, logger).await.expect("failed to build board")
+        build_board(&config, logger)
+            .await
+            .expect("failed to build board")
     }
 
     #[tokio::test]
@@ -444,14 +469,28 @@ mod live {
     async fn live_get_ticket() {
         let board = load_board().await;
         let tickets = board.list_assigned().await.unwrap();
-        assert!(!tickets.is_empty(), "need at least one assigned ticket to test get_ticket");
+        assert!(
+            !tickets.is_empty(),
+            "need at least one assigned ticket to test get_ticket"
+        );
         let id = &tickets[0].id;
         let ticket = board.get_ticket(id).await.unwrap();
         assert_eq!(ticket.summary.id, *id);
         assert!(!ticket.summary.title.is_empty());
         println!("ticket: {} — {}", ticket.summary.title, ticket.summary.url);
-        println!("  state: {} ({})", ticket.summary.list_name, ticket.summary.list_id);
-        println!("  assignees: {}", ticket.assignees.iter().map(|m| m.username.as_str()).collect::<Vec<_>>().join(", "));
+        println!(
+            "  state: {} ({})",
+            ticket.summary.list_name, ticket.summary.list_id
+        );
+        println!(
+            "  assignees: {}",
+            ticket
+                .assignees
+                .iter()
+                .map(|m| m.username.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         println!("  comments: {}", ticket.comments.len());
         println!("  sub_tickets: {}", ticket.sub_tickets.len());
         for sub in &ticket.sub_tickets {
@@ -464,9 +503,15 @@ mod live {
     async fn live_return_ticket() {
         let board = load_board().await;
         let tickets = board.list_assigned().await.unwrap();
-        assert!(!tickets.is_empty(), "need at least one assigned ticket to test return_ticket");
+        assert!(
+            !tickets.is_empty(),
+            "need at least one assigned ticket to test return_ticket"
+        );
         let id = &tickets[0].id;
-        board.return_ticket(id, Some("returning ticket via orga live test")).await.unwrap();
+        board
+            .return_ticket(id, Some("returning ticket via orga live test"))
+            .await
+            .unwrap();
         println!("returned ticket {id}");
     }
 }
@@ -484,7 +529,9 @@ fn make_comments_at(timestamps: &[&str]) -> Vec<Comment> {
         .enumerate()
         .map(|(i, ts)| Comment {
             id: format!("c{i}"),
-            at: chrono::DateTime::parse_from_rfc3339(ts).unwrap().with_timezone(&Utc),
+            at: chrono::DateTime::parse_from_rfc3339(ts)
+                .unwrap()
+                .with_timezone(&Utc),
             who: sample_member(),
             content: format!("comment {i}"),
             agent_name: None,
@@ -516,7 +563,9 @@ fn compaction_filters_comments_before_boundary() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("memory.db");
     let store = CompactionStore::open(&db_path).unwrap();
-    store.set("abc123", "old discussion summarized", boundary, 2).unwrap();
+    store
+        .set("abc123", "old discussion summarized", boundary, 2)
+        .unwrap();
     let rec = store.get("abc123").unwrap().unwrap();
     apply_compaction(&mut ticket, &rec);
     assert_eq!(ticket.comments.len(), 2);
@@ -617,7 +666,10 @@ fn ticket_json_includes_compaction_fields_when_set() {
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(parsed.get("comment_compaction").is_some());
     assert_eq!(parsed["comment_compaction"]["compacted_count"], 10);
-    assert_eq!(parsed["comment_compaction"]["summary"], "discussion resolved");
+    assert_eq!(
+        parsed["comment_compaction"]["summary"],
+        "discussion resolved"
+    );
 }
 
 #[test]

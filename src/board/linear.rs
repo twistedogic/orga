@@ -33,7 +33,11 @@ impl LinearBackend {
             api_key,
             team_id,
             agent_name,
-            viewer: Member { id: String::new(), username: String::new(), full_name: String::new() },
+            viewer: Member {
+                id: String::new(),
+                username: String::new(),
+                full_name: String::new(),
+            },
             client,
             logger,
         };
@@ -73,26 +77,32 @@ impl LinearBackend {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
 
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::BAD_REQUEST {
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::BAD_REQUEST
+        {
             let msg = serde_json::from_str::<GqlResponse>(&body)
                 .ok()
                 .and_then(|r| r.errors)
                 .and_then(|e| e.into_iter().next())
                 .map(|e| e.message)
                 .unwrap_or_else(|| "invalid Linear API key".into());
-            self.logger.error(&format!("Linear HTTP {status}\nBody: {body}"));
+            self.logger
+                .error(&format!("Linear HTTP {status}\nBody: {body}"));
             return Err(OrgaError::Unauthorized(msg));
         }
         if status.is_client_error() || status.is_server_error() {
-            self.logger.error(&format!("Linear HTTP {status}\nBody: {body}"));
-            return Err(OrgaError::BackendError(format!("Linear returned HTTP {status}")));
+            self.logger
+                .error(&format!("Linear HTTP {status}\nBody: {body}"));
+            return Err(OrgaError::BackendError(format!(
+                "Linear returned HTTP {status}"
+            )));
         }
 
         let parsed: GqlResponse =
             serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))?;
 
         if let Some(first) = parsed.errors.and_then(|e| e.into_iter().next()) {
-            self.logger.error(&format!("Linear GQL error: {}", first.message));
+            self.logger
+                .error(&format!("Linear GQL error: {}", first.message));
             return Err(OrgaError::BackendError(first.message));
         }
 
@@ -108,10 +118,9 @@ impl LinearBackend {
         struct Resp {
             viewer: LinearUser,
         }
-        let resp: Resp = self.gql(
-            "query { viewer { id displayName } }",
-            serde_json::json!({}),
-        ).await?;
+        let resp: Resp = self
+            .gql("query { viewer { id displayName } }", serde_json::json!({}))
+            .await?;
         Ok(Member {
             id: resp.viewer.id.clone(),
             username: resp.viewer.display_name.clone(),
@@ -142,14 +151,16 @@ impl LinearBackend {
         struct Resp {
             users: Nodes<LinearUser>,
         }
-        let resp: Resp = self.gql(
-            "query($name: String!) {
+        let resp: Resp = self
+            .gql(
+                "query($name: String!) {
                 users(filter: { displayName: { eq: $name } }) {
                     nodes { id displayName }
                 }
             }",
-            serde_json::json!({ "name": username }),
-        ).await?;
+                serde_json::json!({ "name": username }),
+            )
+            .await?;
         match resp.users.nodes.len() {
             0 => Err(OrgaError::NotFound(format!("user '{username}'"))),
             1 => Ok(resp.users.nodes.into_iter().next().unwrap().id),
@@ -168,10 +179,21 @@ impl LinearBackend {
                 let completed = child
                     .state
                     .as_ref()
-                    .map(|s| s.state_type.as_deref() == Some("completed") || s.state_type.as_deref() == Some("cancelled"))
+                    .map(|s| {
+                        s.state_type.as_deref() == Some("completed")
+                            || s.state_type.as_deref() == Some("cancelled")
+                    })
                     .unwrap_or(false);
-                let list_name = child.state.as_ref().map(|s| s.name.clone()).unwrap_or_default();
-                let list_id = child.state.as_ref().map(|s| s.id.clone()).unwrap_or_default();
+                let list_name = child
+                    .state
+                    .as_ref()
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default();
+                let list_id = child
+                    .state
+                    .as_ref()
+                    .map(|s| s.id.clone())
+                    .unwrap_or_default();
                 TicketSummary {
                     id: child.id,
                     title: child.title,
@@ -192,7 +214,9 @@ impl LinearBackend {
             .nodes
             .into_iter()
             .filter_map(|c| {
-                let at = DateTime::parse_from_rfc3339(&c.created_at).ok()?.with_timezone(&chrono::Utc);
+                let at = DateTime::parse_from_rfc3339(&c.created_at)
+                    .ok()?
+                    .with_timezone(&chrono::Utc);
                 let user = c.user?;
                 let (content, agent_name) = parse_agent_tag(&c.body);
                 Some(Comment {
@@ -210,7 +234,10 @@ impl LinearBackend {
             .collect();
         comments.sort_by_key(|c| c.at);
 
-        let last_commenter_is_agent = comments.last().map(|c| c.agent_name.is_some()).unwrap_or(false);
+        let last_commenter_is_agent = comments
+            .last()
+            .map(|c| c.agent_name.is_some())
+            .unwrap_or(false);
 
         let creator = issue.creator.map(|u| Member {
             id: u.id.clone(),
@@ -228,12 +255,23 @@ impl LinearBackend {
             })
             .collect();
 
-        let state_name = issue.state.as_ref().map(|s| s.name.clone()).unwrap_or_default();
-        let state_id = issue.state.as_ref().map(|s| s.id.clone()).unwrap_or_default();
+        let state_name = issue
+            .state
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let state_id = issue
+            .state
+            .as_ref()
+            .map(|s| s.id.clone())
+            .unwrap_or_default();
         let completed = issue
             .state
             .as_ref()
-            .map(|s| s.state_type.as_deref() == Some("completed") || s.state_type.as_deref() == Some("cancelled"))
+            .map(|s| {
+                s.state_type.as_deref() == Some("completed")
+                    || s.state_type.as_deref() == Some("cancelled")
+            })
             .unwrap_or(false);
 
         let labels: Vec<String> = issue
@@ -267,12 +305,23 @@ impl LinearBackend {
     }
 
     fn linear_issue_to_summary(&self, issue: &LinearIssueSummary) -> TicketSummary {
-        let state_name = issue.state.as_ref().map(|s| s.name.clone()).unwrap_or_default();
-        let state_id = issue.state.as_ref().map(|s| s.id.clone()).unwrap_or_default();
+        let state_name = issue
+            .state
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let state_id = issue
+            .state
+            .as_ref()
+            .map(|s| s.id.clone())
+            .unwrap_or_default();
         let completed = issue
             .state
             .as_ref()
-            .map(|s| s.state_type.as_deref() == Some("completed") || s.state_type.as_deref() == Some("cancelled"))
+            .map(|s| {
+                s.state_type.as_deref() == Some("completed")
+                    || s.state_type.as_deref() == Some("cancelled")
+            })
             .unwrap_or(false);
 
         let creator = issue.creator.as_ref().map(|u| Member {
@@ -287,7 +336,9 @@ impl LinearBackend {
                 .nodes
                 .iter()
                 .filter_map(|c| {
-                    let at = DateTime::parse_from_rfc3339(&c.created_at).ok()?.with_timezone(&chrono::Utc);
+                    let at = DateTime::parse_from_rfc3339(&c.created_at)
+                        .ok()?
+                        .with_timezone(&chrono::Utc);
                     Some((at, c))
                 })
                 .collect();
@@ -304,7 +355,13 @@ impl LinearBackend {
         let labels: Vec<String> = issue
             .labels
             .as_ref()
-            .map(|n| n.nodes.iter().map(|l| l.name.clone()).filter(|n| !n.is_empty()).collect())
+            .map(|n| {
+                n.nodes
+                    .iter()
+                    .map(|l| l.name.clone())
+                    .filter(|n| !n.is_empty())
+                    .collect()
+            })
             .unwrap_or_default();
 
         TicketSummary {
@@ -330,9 +387,13 @@ impl Board for LinearBackend {
 
     async fn list_columns(&self) -> Result<Vec<Column>, OrgaError> {
         Ok(self
-            .team_states().await?
+            .team_states()
+            .await?
             .into_iter()
-            .map(|s| Column { id: s.id, name: s.name })
+            .map(|s| Column {
+                id: s.id,
+                name: s.name,
+            })
             .collect())
     }
 
@@ -346,7 +407,12 @@ impl Board for LinearBackend {
             self.team_id, self.viewer.id
         );
         let resp: Resp = self.gql(&query, serde_json::json!({})).await?;
-        Ok(resp.issues.nodes.iter().map(|i| self.linear_issue_to_summary(i)).collect())
+        Ok(resp
+            .issues
+            .nodes
+            .iter()
+            .map(|i| self.linear_issue_to_summary(i))
+            .collect())
     }
 
     async fn get_ticket(&self, id: &str) -> Result<Ticket, OrgaError> {
@@ -363,7 +429,9 @@ impl Board for LinearBackend {
 
     async fn comment(&self, id: &str, text: &str) -> Result<(), OrgaError> {
         if text.is_empty() {
-            return Err(OrgaError::BackendError("comment text cannot be empty".into()));
+            return Err(OrgaError::BackendError(
+                "comment text cannot be empty".into(),
+            ));
         }
         let tagged = append_agent_tag(text, &self.agent_name);
         #[derive(Deserialize)]
@@ -372,8 +440,12 @@ impl Board for LinearBackend {
             #[serde(rename = "commentCreate")]
             comment_create: SuccessResp,
         }
-        let query = format!("mutation($body: String!) {{ commentCreate(input: {{ issueId: \"{id}\", body: $body }}) {{ success }} }}");
-        let _: Resp = self.gql(&query, serde_json::json!({ "body": tagged })).await?;
+        let query = format!(
+            "mutation($body: String!) {{ commentCreate(input: {{ issueId: \"{id}\", body: $body }}) {{ success }} }}"
+        );
+        let _: Resp = self
+            .gql(&query, serde_json::json!({ "body": tagged }))
+            .await?;
         Ok(())
     }
 
@@ -385,32 +457,43 @@ impl Board for LinearBackend {
             #[serde(rename = "issueUpdate")]
             issue_update: SuccessResp,
         }
-        let query = format!("mutation {{ issueUpdate(id: \"{id}\", input: {{ assigneeId: \"{user_id}\" }}) {{ success }} }}");
+        let query = format!(
+            "mutation {{ issueUpdate(id: \"{id}\", input: {{ assigneeId: \"{user_id}\" }}) {{ success }} }}"
+        );
         let _: Resp = self.gql(&query, serde_json::json!({})).await?;
         Ok(())
     }
 
-    async fn create_sub(&self, parent_id: &str, title: &str, description: Option<&str>, list: Option<&str>) -> Result<Ticket, OrgaError> {
+    async fn create_sub(
+        &self,
+        parent_id: &str,
+        title: &str,
+        description: Option<&str>,
+        list: Option<&str>,
+    ) -> Result<Ticket, OrgaError> {
         let state_id = if let Some(list_name) = list {
             let states = self.team_states().await?;
             states
                 .into_iter()
                 .find(|s| s.name.eq_ignore_ascii_case(list_name))
                 .map(|s| s.id)
-                .ok_or_else(|| OrgaError::NotFound(format!("list '{list_name}'")))?  
+                .ok_or_else(|| OrgaError::NotFound(format!("list '{list_name}'")))?
         } else {
             let parent = self.get_ticket(parent_id).await?;
             parent.summary.list_id
         };
-        let sub_id = self.create_sub_issue(parent_id, title, description, &state_id).await?;
+        let sub_id = self
+            .create_sub_issue(parent_id, title, description, &state_id)
+            .await?;
         self.get_ticket(&sub_id).await
     }
 
     async fn return_ticket(&self, id: &str, comment: Option<&str>) -> Result<(), OrgaError> {
         let ticket = self.get_ticket(id).await?;
-        let creator = ticket.summary.creator.ok_or_else(|| {
-            OrgaError::BackendError("ticket has no known creator".into())
-        })?;
+        let creator = ticket
+            .summary
+            .creator
+            .ok_or_else(|| OrgaError::BackendError("ticket has no known creator".into()))?;
         if let Some(text) = comment {
             self.comment(id, text).await?;
         }
@@ -420,7 +503,13 @@ impl Board for LinearBackend {
 }
 
 impl LinearBackend {
-    async fn create_sub_issue(&self, parent_id: &str, title: &str, description: Option<&str>, state_id: &str) -> Result<String, OrgaError> {
+    async fn create_sub_issue(
+        &self,
+        parent_id: &str,
+        title: &str,
+        description: Option<&str>,
+        state_id: &str,
+    ) -> Result<String, OrgaError> {
         #[derive(Deserialize)]
         struct Resp {
             #[serde(rename = "issueCreate")]
@@ -435,9 +524,19 @@ impl LinearBackend {
             id: String,
         }
         let tid = &self.team_id;
-        let desc_field = if description.is_some() { ", description: $description" } else { "" };
-        let query = format!("mutation($title: String!{}) {{ issueCreate(input: {{ teamId: \"{tid}\", parentId: \"{parent_id}\", stateId: \"{state_id}\", title: $title{desc_field} }}) {{ issue {{ id }} }} }}",
-            if description.is_some() { ", $description: String" } else { "" });
+        let desc_field = if description.is_some() {
+            ", description: $description"
+        } else {
+            ""
+        };
+        let query = format!(
+            "mutation($title: String!{}) {{ issueCreate(input: {{ teamId: \"{tid}\", parentId: \"{parent_id}\", stateId: \"{state_id}\", title: $title{desc_field} }}) {{ issue {{ id }} }} }}",
+            if description.is_some() {
+                ", $description: String"
+            } else {
+                ""
+            }
+        );
         let mut vars = serde_json::json!({ "title": title });
         if let Some(desc) = description {
             vars["description"] = serde_json::Value::String(desc.to_string());
@@ -581,7 +680,10 @@ mod tests {
     }
 
     fn make_summary_comment(body: &str, created_at: &str) -> LinearCommentSummary {
-        LinearCommentSummary { body: body.into(), created_at: created_at.into() }
+        LinearCommentSummary {
+            body: body.into(),
+            created_at: created_at.into(),
+        }
     }
 
     fn make_issue_summary(comments: Vec<LinearCommentSummary>) -> LinearIssueSummary {
@@ -590,7 +692,11 @@ mod tests {
             title: "Test".into(),
             description: None,
             url: "https://linear.app/test/issue/TEST-1".into(),
-            state: Some(LinearState { id: "state-1".into(), name: "Todo".into(), state_type: Some("unstarted".into()) }),
+            state: Some(LinearState {
+                id: "state-1".into(),
+                name: "Todo".into(),
+                state_type: Some("unstarted".into()),
+            }),
             creator: None,
             comments: Nodes { nodes: comments },
             labels: None,
@@ -604,7 +710,11 @@ mod tests {
             api_key: "key".into(),
             team_id: "team-1".into(),
             agent_name: "agent-1".into(),
-            viewer: Member { id: "viewer-1".into(), username: "agent".into(), full_name: "Agent".into() },
+            viewer: Member {
+                id: "viewer-1".into(),
+                username: "agent".into(),
+                full_name: "Agent".into(),
+            },
             client: Client::builder().build().unwrap(),
             logger,
         }
@@ -657,7 +767,11 @@ mod tests {
             title: "Parent".into(),
             description: None,
             url: "https://linear.app/test/issue/TEST-1".into(),
-            state: Some(LinearState { id: "state-1".into(), name: "Todo".into(), state_type: Some("unstarted".into()) }),
+            state: Some(LinearState {
+                id: "state-1".into(),
+                name: "Todo".into(),
+                state_type: Some("unstarted".into()),
+            }),
             creator: None,
             assignee: None,
             comments: Nodes { nodes: vec![] },
@@ -674,13 +788,21 @@ mod tests {
                 id: "sub-1".into(),
                 title: "Fix bug".into(),
                 url: "https://linear.app/sub-1".into(),
-                state: Some(LinearState { id: "s1".into(), name: "Done".into(), state_type: Some("completed".into()) }),
+                state: Some(LinearState {
+                    id: "s1".into(),
+                    name: "Done".into(),
+                    state_type: Some("completed".into()),
+                }),
             },
             LinearChildIssue {
                 id: "sub-2".into(),
                 title: "Write test".into(),
                 url: "https://linear.app/sub-2".into(),
-                state: Some(LinearState { id: "s2".into(), name: "Todo".into(), state_type: Some("unstarted".into()) }),
+                state: Some(LinearState {
+                    id: "s2".into(),
+                    name: "Todo".into(),
+                    state_type: Some("unstarted".into()),
+                }),
             },
         ]);
         let ticket = backend.linear_issue_to_ticket(issue);

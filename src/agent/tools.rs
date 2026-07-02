@@ -58,12 +58,22 @@ pub fn is_terminal_tool(tool_name: &str) -> bool {
 
 pub fn tool_definitions_for(names: &[&str]) -> Vec<ToolDefinition> {
     let all = all_tool_definitions();
-    all.into_iter().filter(|t| names.iter().any(|n| *n == t.name)).collect()
+    all.into_iter()
+        .filter(|t| names.iter().any(|n| *n == t.name))
+        .collect()
 }
 
 pub const MAIN_TOOLS: &[&str] = &[
-    "comment", "dispatch", "skip", "done", "compact", "todos",
-    "memory_list", "memory_read", "memory_write", "memory_search",
+    "comment",
+    "dispatch",
+    "skip",
+    "done",
+    "compact",
+    "todos",
+    "memory_list",
+    "memory_read",
+    "memory_write",
+    "memory_search",
 ];
 
 #[derive(Deserialize)]
@@ -76,7 +86,11 @@ async fn dispatch_comment(args: &str, ctx: &ToolContext) -> String {
         Ok(a) => a,
         Err(e) => return format!("error: invalid args: {e}"),
     };
-    log_action!(ctx, ctx.dry_run, format!("comment on {}: {:?}", ctx.ticket_id, parsed.text));
+    log_action!(
+        ctx,
+        ctx.dry_run,
+        format!("comment on {}: {:?}", ctx.ticket_id, parsed.text)
+    );
     if ctx.dry_run {
         return dry_run_msg(&format!("comment on {}", ctx.ticket_id));
     }
@@ -98,12 +112,34 @@ async fn dispatch_create_sub(args: &str, ctx: &ToolContext) -> String {
         Ok(a) => a,
         Err(e) => return format!("error: invalid args: {e}"),
     };
-    log_action!(ctx, ctx.dry_run, format!("create sub-ticket under {}: {:?}", ctx.ticket_id, parsed.title));
+    log_action!(
+        ctx,
+        ctx.dry_run,
+        format!(
+            "create sub-ticket under {}: {:?}",
+            ctx.ticket_id, parsed.title
+        )
+    );
     if ctx.dry_run {
-        return dry_run_msg(&format!("create sub-ticket '{}' under {}", parsed.title, ctx.ticket_id));
+        return dry_run_msg(&format!(
+            "create sub-ticket '{}' under {}",
+            parsed.title, ctx.ticket_id
+        ));
     }
-    match ctx.board.create_sub(&ctx.ticket_id, &parsed.title, parsed.description.as_deref(), parsed.list.as_deref()).await {
-        Ok(sub) => format!("created sub-ticket: {} ({})", sub.summary.title, sub.summary.url),
+    match ctx
+        .board
+        .create_sub(
+            &ctx.ticket_id,
+            &parsed.title,
+            parsed.description.as_deref(),
+            parsed.list.as_deref(),
+        )
+        .await
+    {
+        Ok(sub) => format!(
+            "created sub-ticket: {} ({})",
+            sub.summary.title, sub.summary.url
+        ),
         Err(e) => format!("error: {e}"),
     }
 }
@@ -118,10 +154,12 @@ async fn dispatch_memory_list(ctx: &ToolContext) -> String {
         Ok(entries) if entries.is_empty() => "(empty repository — no memory files yet)".to_string(),
         Ok(entries) => entries
             .iter()
-            .map(|e| if e.description.is_empty() {
-                e.path.clone()
-            } else {
-                format!("{} — {}", e.path, e.description)
+            .map(|e| {
+                if e.description.is_empty() {
+                    e.path.clone()
+                } else {
+                    format!("{} — {}", e.path, e.description)
+                }
             })
             .collect::<Vec<_>>()
             .join("\n"),
@@ -156,7 +194,10 @@ async fn dispatch_memory_write(args: &str, ctx: &ToolContext) -> String {
     if ctx.dry_run {
         return dry_run_msg(&format!("memory_write {}", parsed.path));
     }
-    match ctx.context_repo.write(&parsed.path, &parsed.content, &parsed.commit_msg) {
+    match ctx
+        .context_repo
+        .write(&parsed.path, &parsed.content, &parsed.commit_msg)
+    {
         Ok(()) => format!("written: {}", parsed.path),
         Err(e) => format!("error: {e}"),
     }
@@ -183,7 +224,6 @@ async fn dispatch_memory_search(args: &str, ctx: &ToolContext) -> String {
     }
 }
 
-
 #[derive(Deserialize)]
 struct CompactArgs {
     summary: String,
@@ -194,12 +234,19 @@ async fn dispatch_compact(args: &str, ctx: &ToolContext) -> String {
         Ok(a) => a,
         Err(e) => return format!("error: invalid args: {e}"),
     };
-    log_action!(ctx, ctx.dry_run, format!("compact comments for {}", ctx.ticket_id));
+    log_action!(
+        ctx,
+        ctx.dry_run,
+        format!("compact comments for {}", ctx.ticket_id)
+    );
     if ctx.dry_run {
         return dry_run_msg(&format!("compact comments for {}", ctx.ticket_id));
     }
     let boundary = chrono::Utc::now();
-    match ctx.compaction_store.set(&ctx.ticket_id, &parsed.summary, boundary, 0) {
+    match ctx
+        .compaction_store
+        .set(&ctx.ticket_id, &parsed.summary, boundary, 0)
+    {
         Ok(()) => "compaction stored".to_string(),
         Err(e) => format!("error: {e}"),
     }
@@ -220,7 +267,11 @@ async fn dispatch_done(args: &str, ctx: &ToolContext) -> String {
     if ctx.dry_run {
         return dry_run_msg(&format!("return ticket {} to creator", ctx.ticket_id));
     }
-    match ctx.board.return_ticket(&ctx.ticket_id, parsed.comment.as_deref()).await {
+    match ctx
+        .board
+        .return_ticket(&ctx.ticket_id, parsed.comment.as_deref())
+        .await
+    {
         Ok(()) => "ticket returned to creator".to_string(),
         Err(e) => format!("error: {e}"),
     }
@@ -246,7 +297,10 @@ struct TodosArgs {
 }
 
 fn todos_scope_key(scope: &str) -> String {
-    scope.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect()
+    scope
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 async fn dispatch_todos(args: &str, ctx: &ToolContext) -> String {
@@ -258,17 +312,26 @@ async fn dispatch_todos(args: &str, ctx: &ToolContext) -> String {
     for item in &parsed.todos {
         match item.status.as_str() {
             "pending" | "in_progress" | "completed" => {}
-            other => return format!("error: invalid status {:?} for todo {:?}", other, item.content),
+            other => {
+                return format!(
+                    "error: invalid status {:?} for todo {:?}",
+                    other, item.content
+                );
+            }
         }
     }
 
     let scope = todos_scope_key(&ctx.agent_scope);
 
-    let new_items: Vec<StoredTodoItem> = parsed.todos.iter().map(|t| StoredTodoItem {
-        content: t.content.clone(),
-        status: t.status.clone(),
-        active_form: t.active_form.clone().unwrap_or_default(),
-    }).collect();
+    let new_items: Vec<StoredTodoItem> = parsed
+        .todos
+        .iter()
+        .map(|t| StoredTodoItem {
+            content: t.content.clone(),
+            status: t.status.clone(),
+            active_form: t.active_form.clone().unwrap_or_default(),
+        })
+        .collect();
 
     let mut pending = 0usize;
     let mut in_progress = 0usize;
@@ -524,17 +587,21 @@ pub struct SleepToolContext {
 
 pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolContext) -> String {
     match tool_name {
-        "memory_list" => {
-            match ctx.context_repo.list() {
-                Ok(entries) if entries.is_empty() => "(empty repository)".to_string(),
-                Ok(entries) => entries
-                    .iter()
-                    .map(|e| if e.description.is_empty() { e.path.clone() } else { format!("{} — {}", e.path, e.description) })
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                Err(e) => format!("error: {e}"),
-            }
-        }
+        "memory_list" => match ctx.context_repo.list() {
+            Ok(entries) if entries.is_empty() => "(empty repository)".to_string(),
+            Ok(entries) => entries
+                .iter()
+                .map(|e| {
+                    if e.description.is_empty() {
+                        e.path.clone()
+                    } else {
+                        format!("{} — {}", e.path, e.description)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(e) => format!("error: {e}"),
+        },
         "memory_read" => {
             let parsed: MemoryReadArgs = match serde_json::from_str(args) {
                 Ok(a) => a,
@@ -550,8 +617,12 @@ pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolCon
                 Ok(a) => a,
                 Err(e) => return format!("error: invalid args: {e}"),
             };
-            ctx.logger.info(&format!("[sleep-tool] memory_write {}", parsed.path));
-            match ctx.context_repo.write(&parsed.path, &parsed.content, &parsed.commit_msg) {
+            ctx.logger
+                .info(&format!("[sleep-tool] memory_write {}", parsed.path));
+            match ctx
+                .context_repo
+                .write(&parsed.path, &parsed.content, &parsed.commit_msg)
+            {
                 Ok(()) => format!("written: {}", parsed.path),
                 Err(e) => format!("error: {e}"),
             }
@@ -561,7 +632,8 @@ pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolCon
                 Ok(a) => a,
                 Err(e) => return format!("error: invalid args: {e}"),
             };
-            ctx.logger.info(&format!("[sleep-tool] memory_delete {}", parsed.path));
+            ctx.logger
+                .info(&format!("[sleep-tool] memory_delete {}", parsed.path));
             match ctx.context_repo.delete(&parsed.path) {
                 Ok(()) => format!("deleted: {}", parsed.path),
                 Err(e) => format!("error: {e}"),
@@ -572,11 +644,7 @@ pub async fn dispatch_sleep_tool(tool_name: &str, args: &str, ctx: &SleepToolCon
 }
 
 pub fn defrag_tool_definitions() -> Vec<ToolDefinition> {
-    let mut defs = tool_definitions_for(&[
-        "memory_list",
-        "memory_read",
-        "memory_write",
-    ]);
+    let mut defs = tool_definitions_for(&["memory_list", "memory_read", "memory_write"]);
     defs.push(ToolDefinition {
         name: "memory_delete".to_string(),
         description: "Delete a file from the context repository. Blocked if the file's description terms are not covered by any other file.".to_string(),
@@ -596,8 +664,8 @@ mod tests {
     use super::*;
     use crate::error::OrgaError;
     use async_trait::async_trait;
-    use std::sync::Mutex;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use tempfile::tempdir;
 
     struct MockBoard {
@@ -606,29 +674,48 @@ mod tests {
 
     impl MockBoard {
         fn new() -> Self {
-            Self { comments: Mutex::new(vec![]) }
+            Self {
+                comments: Mutex::new(vec![]),
+            }
         }
     }
 
     #[async_trait]
     impl crate::board::Board for MockBoard {
-        async fn list_assigned(&self) -> Result<Vec<crate::models::TicketSummary>, OrgaError> { Ok(vec![]) }
+        async fn list_assigned(&self) -> Result<Vec<crate::models::TicketSummary>, OrgaError> {
+            Ok(vec![])
+        }
         async fn get_ticket(&self, _id: &str) -> Result<crate::models::Ticket, OrgaError> {
             Err(OrgaError::NotFound("mock".into()))
         }
         async fn comment(&self, id: &str, text: &str) -> Result<(), OrgaError> {
-            self.comments.lock().unwrap().push((id.to_string(), text.to_string()));
+            self.comments
+                .lock()
+                .unwrap()
+                .push((id.to_string(), text.to_string()));
             Ok(())
         }
-        async fn assign(&self, _id: &str, _username: &str) -> Result<(), OrgaError> { Ok(()) }
-        async fn create_sub(&self, _parent_id: &str, title: &str, _description: Option<&str>, _list: Option<&str>) -> Result<crate::models::Ticket, OrgaError> {
+        async fn assign(&self, _id: &str, _username: &str) -> Result<(), OrgaError> {
+            Ok(())
+        }
+        async fn create_sub(
+            &self,
+            _parent_id: &str,
+            title: &str,
+            _description: Option<&str>,
+            _list: Option<&str>,
+        ) -> Result<crate::models::Ticket, OrgaError> {
             Err(OrgaError::NotFound(format!("mock: {title}")))
         }
-        async fn list_columns(&self) -> Result<Vec<crate::models::Column>, OrgaError> { Ok(vec![]) }
+        async fn list_columns(&self) -> Result<Vec<crate::models::Column>, OrgaError> {
+            Ok(vec![])
+        }
         async fn whoami(&self) -> Result<crate::models::Member, OrgaError> {
             Err(OrgaError::NotFound("mock".into()))
         }
-        async fn return_ticket(&self, _id: &str, _comment: Option<&str>) -> Result<(), OrgaError> { Ok(()) }
+        async fn return_ticket(&self, _id: &str, _comment: Option<&str>) -> Result<(), OrgaError> {
+            Ok(())
+        }
     }
 
     fn make_ctx(dry_run: bool) -> ToolContext {
@@ -643,7 +730,10 @@ mod tests {
             todo_store: crate::memory::TodoStore::open(&db_path).unwrap(),
             context_repo: crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap(),
             dry_run,
-            logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
+            logger: Arc::new(crate::logging::Logger::new(
+                &PathBuf::from("/dev/null"),
+                false,
+            )),
             workspace: None,
         };
         // keep dir alive by leaking it for the test duration
@@ -730,7 +820,10 @@ mod tests {
             todo_store: crate::memory::TodoStore::open(&db_path).unwrap(),
             context_repo: crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap(),
             dry_run,
-            logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
+            logger: Arc::new(crate::logging::Logger::new(
+                &PathBuf::from("/dev/null"),
+                false,
+            )),
             workspace: Some(ws),
         };
         (ctx, dir)
@@ -749,7 +842,12 @@ mod tests {
     #[tokio::test]
     async fn dispatch_bash_captures_non_zero_exit_and_stderr() {
         let (ctx, _dir) = make_ctx_with_workspace(false);
-        let result = dispatch("bash", r#"{"command":"ls /nonexistent_path_xyz 2>&1; exit 1"}"#, &ctx).await;
+        let result = dispatch(
+            "bash",
+            r#"{"command":"ls /nonexistent_path_xyz 2>&1; exit 1"}"#,
+            &ctx,
+        )
+        .await;
         let v: serde_json::Value = serde_json::from_str(&result).expect("should be valid JSON");
         assert_eq!(v["exit_code"].as_i64().unwrap(), 1);
     }
@@ -757,13 +855,21 @@ mod tests {
     #[tokio::test]
     async fn dispatch_bash_executes_in_workspace_dir() {
         let (ctx, dir) = make_ctx_with_workspace(false);
-        let expected = dir.path().join("T-1").canonicalize().unwrap_or_else(|_| dir.path().join("T-1")).to_string_lossy().into_owned();
+        let expected = dir
+            .path()
+            .join("T-1")
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().join("T-1"))
+            .to_string_lossy()
+            .into_owned();
         let result = dispatch("bash", r#"{"command":"pwd"}"#, &ctx).await;
         let v: serde_json::Value = serde_json::from_str(&result).expect("should be valid JSON");
         let actual = v["stdout"].as_str().unwrap().trim().to_string();
         // resolve symlinks on both sides for macOS /private/var vs /var
-        let actual_canon = std::fs::canonicalize(&actual).unwrap_or_else(|_| std::path::PathBuf::from(&actual));
-        let expected_canon = std::fs::canonicalize(&expected).unwrap_or_else(|_| std::path::PathBuf::from(&expected));
+        let actual_canon =
+            std::fs::canonicalize(&actual).unwrap_or_else(|_| std::path::PathBuf::from(&actual));
+        let expected_canon = std::fs::canonicalize(&expected)
+            .unwrap_or_else(|_| std::path::PathBuf::from(&expected));
         assert_eq!(actual_canon, expected_canon);
     }
 
@@ -794,7 +900,12 @@ mod tests {
     #[tokio::test]
     async fn dispatch_todos_invalid_status_returns_error() {
         let ctx = make_ctx(false);
-        let result = dispatch("todos", r#"{"todos":[{"content":"Task","status":"done","active_form":""}]}"#, &ctx).await;
+        let result = dispatch(
+            "todos",
+            r#"{"todos":[{"content":"Task","status":"done","active_form":""}]}"#,
+            &ctx,
+        )
+        .await;
         assert!(result.starts_with("error:"));
         assert!(result.contains("invalid status"));
     }
@@ -820,10 +931,18 @@ mod tests {
             todo_store: crate::memory::TodoStore::open(&db_path).unwrap(),
             context_repo: crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap(),
             dry_run: false,
-            logger: Arc::new(crate::logging::Logger::new(&PathBuf::from("/dev/null"), false)),
+            logger: Arc::new(crate::logging::Logger::new(
+                &PathBuf::from("/dev/null"),
+                false,
+            )),
             workspace: None,
         };
-        let result = dispatch("todos", r#"{"todos":[{"content":"Task","status":"pending","active_form":""}]}"#, &ctx).await;
+        let result = dispatch(
+            "todos",
+            r#"{"todos":[{"content":"Task","status":"pending","active_form":""}]}"#,
+            &ctx,
+        )
+        .await;
         assert!(result.contains("Todo list updated successfully"));
     }
 
@@ -836,17 +955,23 @@ mod tests {
             "themes/auth.md",
             "---\ndescription: Auth JWT patterns\n---\n\nAuth JWT patterns covered here.",
             "add auth",
-        ).unwrap();
+        )
+        .unwrap();
         repo.write(
             "themes/notes.md",
             "---\ndescription: Auth notes\n---\n\nNotes.",
             "add notes",
-        ).unwrap();
+        )
+        .unwrap();
         let ctx = SleepToolContext {
             context_repo: crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap(),
-            logger: Arc::new(crate::logging::Logger::new(&std::path::PathBuf::from("/dev/null"), false)),
+            logger: Arc::new(crate::logging::Logger::new(
+                &std::path::PathBuf::from("/dev/null"),
+                false,
+            )),
         };
-        let result = dispatch_sleep_tool("memory_delete", r#"{"path":"themes/notes.md"}"#, &ctx).await;
+        let result =
+            dispatch_sleep_tool("memory_delete", r#"{"path":"themes/notes.md"}"#, &ctx).await;
         assert_eq!(result, "deleted: themes/notes.md");
     }
 
@@ -859,12 +984,17 @@ mod tests {
             "themes/obscure.md",
             "---\ndescription: Webhook retry backoff\n---\n\nContent.",
             "add obscure",
-        ).unwrap();
+        )
+        .unwrap();
         let ctx = SleepToolContext {
             context_repo: crate::memory::ContextRepository::open(&repo_path, "test-agent").unwrap(),
-            logger: Arc::new(crate::logging::Logger::new(&std::path::PathBuf::from("/dev/null"), false)),
+            logger: Arc::new(crate::logging::Logger::new(
+                &std::path::PathBuf::from("/dev/null"),
+                false,
+            )),
         };
-        let result = dispatch_sleep_tool("memory_delete", r#"{"path":"themes/obscure.md"}"#, &ctx).await;
+        let result =
+            dispatch_sleep_tool("memory_delete", r#"{"path":"themes/obscure.md"}"#, &ctx).await;
         assert!(result.starts_with("error:"));
         assert!(result.contains("cannot delete"));
     }

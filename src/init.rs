@@ -1,11 +1,13 @@
 use std::path::Path;
 
 use inquire::{Password, Select, Text};
-use reqwest::blocking::Client;
 use reqwest::StatusCode;
+use reqwest::blocking::Client;
 use serde::Deserialize;
 
-use crate::config::{AgentConfig, AppConfig, BoardConfig, LlmConfig, MemoryConfig, SkillsConfig, WorkspaceConfig};
+use crate::config::{
+    AgentConfig, AppConfig, BoardConfig, LlmConfig, MemoryConfig, SkillsConfig, WorkspaceConfig,
+};
 use crate::error::OrgaError;
 
 // ── Linear init helpers ─────────────────────────────────────────────────────
@@ -26,11 +28,18 @@ pub struct LinearTeamItem {
 
 fn linear_gql<T: for<'de> Deserialize<'de>>(api_key: &str, query: &str) -> Result<T, OrgaError> {
     #[derive(serde::Serialize)]
-    struct Payload<'a> { query: &'a str }
+    struct Payload<'a> {
+        query: &'a str,
+    }
     #[derive(Deserialize)]
-    struct GqlError { message: String }
+    struct GqlError {
+        message: String,
+    }
     #[derive(Deserialize)]
-    struct GqlResponse { data: Option<serde_json::Value>, errors: Option<Vec<GqlError>> }
+    struct GqlResponse {
+        data: Option<serde_json::Value>,
+        errors: Option<Vec<GqlError>>,
+    }
 
     let client = Client::new();
     let resp = client
@@ -53,29 +62,40 @@ fn linear_gql<T: for<'de> Deserialize<'de>>(api_key: &str, query: &str) -> Resul
         return Err(OrgaError::Unauthorized(msg));
     }
     if status.is_client_error() || status.is_server_error() {
-        return Err(OrgaError::BackendError(format!("Linear returned HTTP {status}")));
+        return Err(OrgaError::BackendError(format!(
+            "Linear returned HTTP {status}"
+        )));
     }
 
-    let parsed: GqlResponse = serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))?;
+    let parsed: GqlResponse =
+        serde_json::from_str(&body).map_err(|e| OrgaError::BackendError(e.to_string()))?;
     if let Some(first) = parsed.errors.and_then(|e| e.into_iter().next()) {
         return Err(OrgaError::BackendError(first.message));
     }
-    let data = parsed.data.ok_or_else(|| OrgaError::BackendError("Linear returned no data".into()))?;
+    let data = parsed
+        .data
+        .ok_or_else(|| OrgaError::BackendError("Linear returned no data".into()))?;
     serde_json::from_value(data).map_err(|e| OrgaError::BackendError(e.to_string()))
 }
 
 fn fetch_linear_viewer(api_key: &str) -> Result<LinearInitUser, OrgaError> {
     #[derive(Deserialize)]
-    struct Resp { viewer: LinearInitUser }
+    struct Resp {
+        viewer: LinearInitUser,
+    }
     let resp: Resp = linear_gql(api_key, "query { viewer { id displayName } }")?;
     Ok(resp.viewer)
 }
 
 fn fetch_linear_teams(api_key: &str) -> Result<Vec<LinearTeamItem>, OrgaError> {
     #[derive(Deserialize)]
-    struct Nodes { nodes: Vec<LinearTeamItem> }
+    struct Nodes {
+        nodes: Vec<LinearTeamItem>,
+    }
     #[derive(Deserialize)]
-    struct Resp { teams: Nodes }
+    struct Resp {
+        teams: Nodes,
+    }
     let resp: Resp = linear_gql(api_key, "query { teams { nodes { id name } } }")?;
     Ok(resp.teams.nodes)
 }
@@ -105,12 +125,10 @@ fn fetch_me(api_key: &str, token: &str) -> Result<TrelloMeResponse, OrgaError> {
         StatusCode::UNAUTHORIZED => {
             return Err(OrgaError::Unauthorized(
                 "invalid Trello API key or token".into(),
-            ))
+            ));
         }
         s if s.is_client_error() || s.is_server_error() => {
-            return Err(OrgaError::BackendError(format!(
-                "Trello returned HTTP {s}"
-            )))
+            return Err(OrgaError::BackendError(format!("Trello returned HTTP {s}")));
         }
         _ => {}
     }
@@ -130,12 +148,10 @@ fn fetch_boards(api_key: &str, token: &str) -> Result<Vec<TrelloBoardItem>, Orga
         StatusCode::UNAUTHORIZED => {
             return Err(OrgaError::Unauthorized(
                 "invalid Trello API key or token".into(),
-            ))
+            ));
         }
         s if s.is_client_error() || s.is_server_error() => {
-            return Err(OrgaError::BackendError(format!(
-                "Trello returned HTTP {s}"
-            )))
+            return Err(OrgaError::BackendError(format!("Trello returned HTTP {s}")));
         }
         _ => {}
     }
@@ -209,7 +225,13 @@ fn run_trello_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(
             .without_confirmation()
             .prompt()
             .map_err(|e| OrgaError::ConfigError(e.to_string()))
-            .map(|t| if t.is_empty() { default_token.clone() } else { t })?
+            .map(|t| {
+                if t.is_empty() {
+                    default_token.clone()
+                } else {
+                    t
+                }
+            })?
     };
 
     print!("Fetching your Trello profile... ");
@@ -243,8 +265,12 @@ fn run_trello_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(
         .unwrap_or_default();
 
     let mut config = AppConfig::try_load(config_path).unwrap_or_else(|| AppConfig {
-        agent: crate::config::AgentConfig { name: agent_name.clone() },
-        board: crate::config::BoardConfig { backend: "trello".into() },
+        agent: crate::config::AgentConfig {
+            name: agent_name.clone(),
+        },
+        board: crate::config::BoardConfig {
+            backend: "trello".into(),
+        },
         trello: None,
         linear: None,
         memory: None,
@@ -304,7 +330,13 @@ fn run_linear_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(
             .without_confirmation()
             .prompt()
             .map_err(|e| OrgaError::ConfigError(e.to_string()))
-            .map(|k| if k.is_empty() { default_api_key.clone() } else { k })?
+            .map(|k| {
+                if k.is_empty() {
+                    default_api_key.clone()
+                } else {
+                    k
+                }
+            })?
     };
 
     print!("Verifying Linear API key... ");
@@ -338,8 +370,12 @@ fn run_linear_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(
         .unwrap_or_default();
 
     let mut config = AppConfig::try_load(config_path).unwrap_or_else(|| AppConfig {
-        agent: crate::config::AgentConfig { name: agent_name.clone() },
-        board: crate::config::BoardConfig { backend: "linear".into() },
+        agent: crate::config::AgentConfig {
+            name: agent_name.clone(),
+        },
+        board: crate::config::BoardConfig {
+            backend: "linear".into(),
+        },
         trello: None,
         linear: None,
         memory: None,
@@ -401,10 +437,20 @@ pub fn run_agent_init(config_path: &Path) -> Result<(), OrgaError> {
             .without_confirmation()
             .prompt()
             .map_err(|e| OrgaError::ConfigError(e.to_string()))
-            .map(|k| if k.is_empty() { default_api_key.clone() } else { k })?
+            .map(|k| {
+                if k.is_empty() {
+                    default_api_key.clone()
+                } else {
+                    k
+                }
+            })?
     };
 
-    let provider_default_model = if provider == "openai" { "gpt-4o" } else { "claude-opus-4-5" };
+    let provider_default_model = if provider == "openai" {
+        "gpt-4o"
+    } else {
+        "claude-opus-4-5"
+    };
     let existing_model = existing
         .as_ref()
         .and_then(|c| c.llm.as_ref())
@@ -450,8 +496,12 @@ pub fn run_agent_init(config_path: &Path) -> Result<(), OrgaError> {
         .map_err(|e| OrgaError::ConfigError(e.to_string()))?;
 
     let mut config = existing.unwrap_or_else(|| AppConfig {
-        agent: AgentConfig { name: String::new() },
-        board: BoardConfig { backend: "trello".into() },
+        agent: AgentConfig {
+            name: String::new(),
+        },
+        board: BoardConfig {
+            backend: "trello".into(),
+        },
         trello: None,
         linear: None,
         memory: None,
@@ -476,13 +526,19 @@ pub fn run_agent_init(config_path: &Path) -> Result<(), OrgaError> {
     config.memory = if memory_path.is_empty() {
         config.memory
     } else {
-        Some(MemoryConfig { path: Some(memory_path), defrag_file_threshold: None, defrag_size_threshold_kb: None })
+        Some(MemoryConfig {
+            path: Some(memory_path),
+            defrag_file_threshold: None,
+            defrag_size_threshold_kb: None,
+        })
     };
 
     config.workspace = if workspace_path.is_empty() {
         config.workspace
     } else {
-        Some(WorkspaceConfig { path: workspace_path })
+        Some(WorkspaceConfig {
+            path: workspace_path,
+        })
     };
 
     config.skills = if skills_path.is_empty() {
@@ -505,10 +561,18 @@ mod tests {
     use crate::config::{AgentConfig, BoardConfig, LinearConfig, TrelloConfig};
     use tempfile::NamedTempFile;
 
-    fn make_trello_config(name: &str, board_id: &str, api_key: &str, token: &str, member_id: &str) -> AppConfig {
+    fn make_trello_config(
+        name: &str,
+        board_id: &str,
+        api_key: &str,
+        token: &str,
+        member_id: &str,
+    ) -> AppConfig {
         AppConfig {
             agent: AgentConfig { name: name.into() },
-            board: BoardConfig { backend: "trello".into() },
+            board: BoardConfig {
+                backend: "trello".into(),
+            },
             trello: Some(TrelloConfig {
                 api_key: api_key.into(),
                 token: token.into(),
@@ -530,9 +594,14 @@ mod tests {
     fn make_linear_config(name: &str, team_id: &str, api_key: &str) -> AppConfig {
         AppConfig {
             agent: AgentConfig { name: name.into() },
-            board: BoardConfig { backend: "linear".into() },
+            board: BoardConfig {
+                backend: "linear".into(),
+            },
             trello: None,
-            linear: Some(LinearConfig { api_key: api_key.into(), team_id: team_id.into() }),
+            linear: Some(LinearConfig {
+                api_key: api_key.into(),
+                team_id: team_id.into(),
+            }),
             memory: None,
             logging: None,
             llm: None,
@@ -572,9 +641,11 @@ mod tests {
     fn write_config_file_overwrites_existing_preserving_new_values() {
         let f = NamedTempFile::new().unwrap();
         make_trello_config("old-name", "old-board", "old-key", "old-tok", "old-mem")
-            .save(f.path()).unwrap();
+            .save(f.path())
+            .unwrap();
         make_trello_config("new-name", "new-board", "new-key", "new-tok", "new-mem")
-            .save(f.path()).unwrap();
+            .save(f.path())
+            .unwrap();
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.agent.name, "new-name");
         assert_eq!(cfg.trello.as_ref().unwrap().board_id, "new-board");
@@ -583,7 +654,9 @@ mod tests {
     #[test]
     fn write_linear_config_file_produces_valid_toml() {
         let f = NamedTempFile::new().unwrap();
-        make_linear_config("agent-1", "team-abc", "lin_api_xyz").save(f.path()).unwrap();
+        make_linear_config("agent-1", "team-abc", "lin_api_xyz")
+            .save(f.path())
+            .unwrap();
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.agent.name, "agent-1");
         assert_eq!(cfg.board.backend, "linear");
@@ -591,5 +664,4 @@ mod tests {
         assert_eq!(cfg.linear.unwrap().api_key, "lin_api_xyz");
         assert!(cfg.trello.is_none());
     }
-
 }

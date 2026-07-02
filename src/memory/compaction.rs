@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::error::OrgaError;
 

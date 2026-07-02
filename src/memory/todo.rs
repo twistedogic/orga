@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::error::OrgaError;
 
@@ -44,9 +44,9 @@ impl TodoStore {
     }
 
     pub fn get(&self, ticket_id: &str, scope: &str) -> Result<Option<String>, OrgaError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT todos FROM agent_todos WHERE ticket_id = ?1 AND scope = ?2",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT todos FROM agent_todos WHERE ticket_id = ?1 AND scope = ?2")?;
         let mut rows = stmt.query(params![ticket_id, scope])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))

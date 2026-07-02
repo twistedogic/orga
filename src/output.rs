@@ -20,7 +20,10 @@ pub fn print_ticket_detail(t: &Ticket) {
     println!("ID:        {}", t.summary.id);
     println!("List:      {}", t.summary.list_name);
     println!("URL:       {}", t.summary.url);
-    println!("Completed: {}", if t.summary.completed { "yes" } else { "no" });
+    println!(
+        "Completed: {}",
+        if t.summary.completed { "yes" } else { "no" }
+    );
     if let Some(ref creator) = t.summary.creator {
         println!("Creator:   @{}", creator.username);
     }
@@ -52,11 +55,17 @@ pub fn print_ticket_detail(t: &Ticket) {
             }
         }
         for c in &t.comments {
-            println!("  @{} at {}:", c.who.username, c.at.format("%Y-%m-%d %H:%M"));
+            println!(
+                "  @{} at {}:",
+                c.who.username,
+                c.at.format("%Y-%m-%d %H:%M")
+            );
             println!("    {}", c.content);
         }
         if t.compaction_suggested {
-            println!("  [compaction suggested: consider running `ticket compact` to reduce context]");
+            println!(
+                "  [compaction suggested: consider running `ticket compact` to reduce context]"
+            );
         }
     }
 }

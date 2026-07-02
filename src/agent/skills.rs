@@ -17,14 +17,20 @@ pub struct SkillMeta {
 
 pub fn scan_skills(path: &Path, logger: &Arc<Logger>) -> Vec<SkillMeta> {
     if !path.exists() {
-        logger.warn(&format!("[skills] skills folder not found: {}", path.display()));
+        logger.warn(&format!(
+            "[skills] skills folder not found: {}",
+            path.display()
+        ));
         return vec![];
     }
 
     let entries = match std::fs::read_dir(path) {
         Ok(e) => e,
         Err(err) => {
-            logger.warn(&format!("[skills] cannot read skills folder {}: {err}", path.display()));
+            logger.warn(&format!(
+                "[skills] cannot read skills folder {}: {err}",
+                path.display()
+            ));
             return vec![];
         }
     };
@@ -42,7 +48,10 @@ pub fn scan_skills(path: &Path, logger: &Arc<Logger>) -> Vec<SkillMeta> {
         let content = match std::fs::read_to_string(&skill_md) {
             Ok(c) => c,
             Err(err) => {
-                logger.warn(&format!("[skills] cannot read {}: {err}", skill_md.display()));
+                logger.warn(&format!(
+                    "[skills] cannot read {}: {err}",
+                    skill_md.display()
+                ));
                 continue;
             }
         };
@@ -145,13 +154,15 @@ pub fn match_skills<'a>(
             activates = true;
         }
         if let Some(ref col) = skill.match_column
-            && col.to_lowercase() == ticket_column {
-                activates = true;
-            }
+            && col.to_lowercase() == ticket_column
+        {
+            activates = true;
+        }
         if let Some(ref lbl) = skill.match_label
-            && ticket_labels_lower.iter().any(|l| l == &lbl.to_lowercase()) {
-                activates = true;
-            }
+            && ticket_labels_lower.iter().any(|l| l == &lbl.to_lowercase())
+        {
+            activates = true;
+        }
         if skill_label_requests.iter().any(|r| r == &skill.name) {
             activates = true;
         }
@@ -177,9 +188,9 @@ pub fn match_skills<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::logging::Logger;
     use crate::models::{Member, TicketSummary};
+    use std::sync::Arc;
 
     fn make_logger() -> Arc<Logger> {
         Arc::new(Logger::new(std::path::Path::new("/dev/null"), false))
@@ -194,7 +205,11 @@ mod tests {
             list_name: column.into(),
             url: "https://example.com".into(),
             completed: false,
-            creator: Some(Member { id: "u1".into(), username: "alice".into(), full_name: "Alice".into() }),
+            creator: Some(Member {
+                id: "u1".into(),
+                username: "alice".into(),
+                full_name: "Alice".into(),
+            }),
             last_commenter_is_agent: false,
             labels: labels.iter().map(|s| s.to_string()).collect(),
         }
@@ -234,19 +249,26 @@ mod tests {
 
     #[test]
     fn parse_match_column_metadata() {
-        let content = "---\nname: s\ndescription: x\nmetadata:\n  orga-match-column: \"Review\"\n---\nBody.";
+        let content =
+            "---\nname: s\ndescription: x\nmetadata:\n  orga-match-column: \"Review\"\n---\nBody.";
         let skill = parse(content).unwrap();
         assert_eq!(skill.match_column.as_deref(), Some("Review"));
     }
 
     #[test]
     fn parse_match_label_metadata() {
-        let content = "---\nname: s\ndescription: x\nmetadata:\n  orga-match-label: \"security\"\n---\nBody.";
+        let content =
+            "---\nname: s\ndescription: x\nmetadata:\n  orga-match-label: \"security\"\n---\nBody.";
         let skill = parse(content).unwrap();
         assert_eq!(skill.match_label.as_deref(), Some("security"));
     }
 
-    fn make_skill(name: &str, match_always: bool, match_column: Option<&str>, match_label: Option<&str>) -> SkillMeta {
+    fn make_skill(
+        name: &str,
+        match_always: bool,
+        match_column: Option<&str>,
+        match_label: Option<&str>,
+    ) -> SkillMeta {
         SkillMeta {
             name: name.into(),
             description: "desc".into(),

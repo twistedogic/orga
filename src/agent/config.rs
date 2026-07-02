@@ -15,9 +15,9 @@ pub fn build_llm_client(cfg: &LlmConfig) -> Result<LlmClient, OrgaError> {
             if let Some(ref ep) = cfg.endpoint {
                 builder = builder.base_url(ep);
             }
-            let client = builder
-                .build()
-                .map_err(|e| OrgaError::ConfigError(format!("failed to build Anthropic client: {e}")))?;
+            let client = builder.build().map_err(|e| {
+                OrgaError::ConfigError(format!("failed to build Anthropic client: {e}"))
+            })?;
             Ok(LlmClient::Anthropic(client))
         }
         "openai" => {
@@ -25,9 +25,9 @@ pub fn build_llm_client(cfg: &LlmConfig) -> Result<LlmClient, OrgaError> {
             if let Some(ref ep) = cfg.endpoint {
                 builder = builder.base_url(ep);
             }
-            let client = builder
-                .build()
-                .map_err(|e| OrgaError::ConfigError(format!("failed to build OpenAI client: {e}")))?;
+            let client = builder.build().map_err(|e| {
+                OrgaError::ConfigError(format!("failed to build OpenAI client: {e}"))
+            })?;
             Ok(LlmClient::OpenAi(client))
         }
         other => Err(OrgaError::ConfigError(format!(

@@ -17,11 +17,7 @@ impl Logger {
     }
 
     pub fn with_stdout(path: &Path, debug: bool, stdout: bool) -> Self {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .ok();
+        let file = OpenOptions::new().create(true).append(true).open(path).ok();
         Self {
             file: Mutex::new(file),
             debug,
@@ -54,9 +50,10 @@ impl Logger {
             println!("{line}");
         }
         if let Ok(mut guard) = self.file.lock()
-            && let Some(f) = guard.as_mut() {
-                let _ = writeln!(f, "{line}");
-            }
+            && let Some(f) = guard.as_mut()
+        {
+            let _ = writeln!(f, "{line}");
+        }
     }
 }
 

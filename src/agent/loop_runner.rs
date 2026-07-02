@@ -2,7 +2,9 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rig_core::completion::{AssistantContent, CompletionModel, CompletionRequest, Message, ToolDefinition};
+use rig_core::completion::{
+    AssistantContent, CompletionModel, CompletionRequest, Message, ToolDefinition,
+};
 use rig_core::one_or_many::OneOrMany;
 
 use crate::error::{OrgaError, classify_completion_error};
@@ -18,12 +20,14 @@ pub enum LoopOutcome {
     Terminal,
 }
 
-pub fn make_completion_request(history: &[Message], tools: Vec<ToolDefinition>) -> CompletionRequest {
+pub fn make_completion_request(
+    history: &[Message],
+    tools: Vec<ToolDefinition>,
+) -> CompletionRequest {
     CompletionRequest {
         model: None,
         preamble: None,
-        chat_history: OneOrMany::many(history.to_vec())
-            .expect("history must be non-empty"),
+        chat_history: OneOrMany::many(history.to_vec()).expect("history must be non-empty"),
         documents: vec![],
         tools,
         temperature: None,
@@ -91,12 +95,24 @@ where
         let choices: Vec<AssistantContent> = response.choice.into_iter().collect();
         last_text = choices
             .iter()
-            .filter_map(|c| if let AssistantContent::Text(t) = c { Some(t.text.clone()) } else { None })
+            .filter_map(|c| {
+                if let AssistantContent::Text(t) = c {
+                    Some(t.text.clone())
+                } else {
+                    None
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let tool_calls: Vec<_> = choices
             .iter()
-            .filter_map(|c| if let AssistantContent::ToolCall(tc) = c { Some(tc.clone()) } else { None })
+            .filter_map(|c| {
+                if let AssistantContent::ToolCall(tc) = c {
+                    Some(tc.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
 
         if let Ok(content) = OneOrMany::many(choices.clone()) {

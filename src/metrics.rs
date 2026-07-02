@@ -58,13 +58,9 @@ impl TicketOutcome {
     }
 }
 
-const LLM_DURATION_BUCKETS: &[f64] = &[
-    0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0,
-];
+const LLM_DURATION_BUCKETS: &[f64] = &[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0];
 
-const TICKET_DURATION_BUCKETS: &[f64] = &[
-    0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
-];
+const TICKET_DURATION_BUCKETS: &[f64] = &[0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0];
 
 pub struct AgentMetrics {
     pub registry: Registry,
@@ -158,37 +154,19 @@ impl AgentMetrics {
             .inc();
     }
 
-    pub fn record_llm_error(
-        &self,
-        model: &str,
-        provider: &str,
-        agent: &str,
-        kind: LlmErrorKind,
-    ) {
+    pub fn record_llm_error(&self, model: &str, provider: &str, agent: &str, kind: LlmErrorKind) {
         self.llm_requests
             .with_label_values(&[model, provider, agent, kind.as_str()])
             .inc();
     }
 
-    pub fn record_llm_duration(
-        &self,
-        model: &str,
-        provider: &str,
-        agent: &str,
-        elapsed: Duration,
-    ) {
+    pub fn record_llm_duration(&self, model: &str, provider: &str, agent: &str, elapsed: Duration) {
         self.llm_duration
             .with_label_values(&[model, provider, agent])
             .observe(elapsed.as_secs_f64());
     }
 
-    pub fn record_tokens(
-        &self,
-        model: &str,
-        provider: &str,
-        agent: &str,
-        usage: &Usage,
-    ) {
+    pub fn record_tokens(&self, model: &str, provider: &str, agent: &str, usage: &Usage) {
         let input = usage.input_tokens;
         let output = usage.output_tokens;
         let cached = usage.cached_input_tokens + usage.cache_creation_input_tokens;
@@ -227,9 +205,8 @@ impl AgentMetrics {
         let encoder = TextEncoder::new();
         let mut buf = Vec::new();
         encoder.encode(&self.registry.gather(), &mut buf)?;
-        Ok(String::from_utf8(buf).map_err(|e| {
-            prometheus::Error::Msg(format!("metrics text is not valid utf8: {e}"))
-        })?)
+        String::from_utf8(buf)
+            .map_err(|e| prometheus::Error::Msg(format!("metrics text is not valid utf8: {e}")))
     }
 }
 
@@ -302,11 +279,36 @@ mod tests {
             reasoning_tokens: 10,
         };
         m.record_tokens("m", "p", "a", &usage);
-        assert_eq!(m.llm_tokens.with_label_values(&["m", "p", "a", "input"]).get(), 100);
-        assert_eq!(m.llm_tokens.with_label_values(&["m", "p", "a", "output"]).get(), 50);
-        assert_eq!(m.llm_tokens.with_label_values(&["m", "p", "a", "cached"]).get(), 25);
-        assert_eq!(m.llm_tokens.with_label_values(&["m", "p", "a", "reasoning"]).get(), 10);
-        assert_eq!(m.llm_tokens.with_label_values(&["m", "p", "a", "total"]).get(), 180);
+        assert_eq!(
+            m.llm_tokens
+                .with_label_values(&["m", "p", "a", "input"])
+                .get(),
+            100
+        );
+        assert_eq!(
+            m.llm_tokens
+                .with_label_values(&["m", "p", "a", "output"])
+                .get(),
+            50
+        );
+        assert_eq!(
+            m.llm_tokens
+                .with_label_values(&["m", "p", "a", "cached"])
+                .get(),
+            25
+        );
+        assert_eq!(
+            m.llm_tokens
+                .with_label_values(&["m", "p", "a", "reasoning"])
+                .get(),
+            10
+        );
+        assert_eq!(
+            m.llm_tokens
+                .with_label_values(&["m", "p", "a", "total"])
+                .get(),
+            180
+        );
     }
 
     #[test]
@@ -324,8 +326,14 @@ mod tests {
         let m = AgentMetrics::new();
         m.record_tool_call("comment", ToolScope::Main, ToolOutcome::Ok);
         m.record_tool_call("comment", ToolScope::Subagent, ToolOutcome::Error);
-        let ok = m.tool_calls.with_label_values(&["comment", "main", "ok"]).get();
-        let err = m.tool_calls.with_label_values(&["comment", "subagent", "error"]).get();
+        let ok = m
+            .tool_calls
+            .with_label_values(&["comment", "main", "ok"])
+            .get();
+        let err = m
+            .tool_calls
+            .with_label_values(&["comment", "subagent", "error"])
+            .get();
         assert_eq!(ok, 1);
         assert_eq!(err, 1);
     }
@@ -336,8 +344,14 @@ mod tests {
         m.record_ticket(TicketOutcome::Success, Duration::from_millis(500));
         m.record_ticket(TicketOutcome::Error, Duration::from_secs(2));
         let text = m.encode().unwrap();
-        assert!(text.contains("orga_agent_ticket_processing_duration_seconds_count{outcome=\"success\"} 1"));
-        assert!(text.contains("orga_agent_ticket_processing_duration_seconds_count{outcome=\"error\"} 1"));
+        assert!(text.contains(
+            "orga_agent_ticket_processing_duration_seconds_count{outcome=\"success\"} 1"
+        ));
+        assert!(
+            text.contains(
+                "orga_agent_ticket_processing_duration_seconds_count{outcome=\"error\"} 1"
+            )
+        );
     }
 
     #[test]
@@ -347,6 +361,8 @@ mod tests {
         let text = m.encode().unwrap();
         assert!(text.contains("# HELP orga_llm_requests_total"));
         assert!(text.contains("# TYPE orga_llm_requests_total counter"));
-        assert!(text.contains("orga_llm_requests_total{agent=\"a\",kind=\"ok\",model=\"m\",provider=\"p\"} 1"));
+        assert!(text.contains(
+            "orga_llm_requests_total{agent=\"a\",kind=\"ok\",model=\"m\",provider=\"p\"} 1"
+        ));
     }
 }

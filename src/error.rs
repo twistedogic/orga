@@ -174,10 +174,11 @@ mod tests {
 
     #[test]
     fn classify_invalid_status_code_uses_status() {
-        let (kind, _) = classify_http_client_error(&http_client::Error::InvalidStatusCodeWithMessage(
-            reqwest::StatusCode::TOO_MANY_REQUESTS,
-            "rate limited".to_string(),
-        ));
+        let (kind, _) =
+            classify_http_client_error(&http_client::Error::InvalidStatusCodeWithMessage(
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                "rate limited".to_string(),
+            ));
         assert_eq!(kind, LlmErrorKind::RateLimited);
     }
 

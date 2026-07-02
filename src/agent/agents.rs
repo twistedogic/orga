@@ -110,7 +110,10 @@ mod tests {
         assert_eq!(agent.tools, vec!["comment", "done"]);
         assert_eq!(agent.skills, vec!["rust"]);
         assert_eq!(agent.max_actions, Some(5));
-        assert_eq!(agent.system_prompt.as_deref(), Some("You are a researcher."));
+        assert_eq!(
+            agent.system_prompt.as_deref(),
+            Some("You are a researcher.")
+        );
     }
 
     #[test]

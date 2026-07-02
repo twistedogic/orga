@@ -104,9 +104,10 @@ fn visit_dir(root: &Path, dir: &Path, paths: &mut Vec<String>) -> std::io::Resul
         if ft.is_dir() {
             visit_dir(root, &path, paths)?;
         } else if ft.is_file()
-            && let Ok(rel) = path.strip_prefix(root) {
-                paths.push(rel.to_string_lossy().into_owned());
-            }
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            paths.push(rel.to_string_lossy().into_owned());
+        }
     }
     Ok(())
 }
@@ -122,7 +123,10 @@ mod tests {
 
     #[test]
     fn sanitize_ticket_id_replaces_unsafe_chars() {
-        assert_eq!(WorkspaceStore::sanitize_ticket_id("PROJ-123/sub:task"), "PROJ-123_sub_task");
+        assert_eq!(
+            WorkspaceStore::sanitize_ticket_id("PROJ-123/sub:task"),
+            "PROJ-123_sub_task"
+        );
         assert_eq!(WorkspaceStore::sanitize_ticket_id("TICKET-1"), "TICKET-1");
     }
 

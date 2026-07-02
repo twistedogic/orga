@@ -24,10 +24,18 @@ use orga::systemd::install_service;
                   manage checklists, and track working context — all through the board."
 )]
 struct Cli {
-    #[arg(long, global = true, help = "Path to config file (default: ~/.orga/config.toml)")]
+    #[arg(
+        long,
+        global = true,
+        help = "Path to config file (default: ~/.orga/config.toml)"
+    )]
     config: Option<String>,
 
-    #[arg(long, global = true, help = "Output as JSON instead of human-readable text")]
+    #[arg(
+        long,
+        global = true,
+        help = "Output as JSON instead of human-readable text"
+    )]
     json: bool,
 
     #[command(subcommand)]
@@ -53,7 +61,10 @@ enum SystemdCommands {
 
 #[derive(Subcommand)]
 enum Commands {
-    #[command(subcommand, about = "Interactive setup wizard to create or update config")]
+    #[command(
+        subcommand,
+        about = "Interactive setup wizard to create or update config"
+    )]
     Init(InitCommands),
     #[command(subcommand, about = "Manage tickets on the board")]
     Ticket(TicketCommands),
@@ -80,7 +91,11 @@ enum TicketCommands {
     List {
         #[arg(long, help = "Show only completed tickets", conflicts_with = "all")]
         completed: bool,
-        #[arg(long, help = "Show all tickets regardless of status", conflicts_with = "completed")]
+        #[arg(
+            long,
+            help = "Show all tickets regardless of status",
+            conflicts_with = "completed"
+        )]
         all: bool,
     },
     #[command(about = "Show full details of a ticket including comments and checklists")]
@@ -110,7 +125,10 @@ enum TicketCommands {
         title: String,
         #[arg(long, help = "Description for the sub-ticket")]
         description: Option<String>,
-        #[arg(long, help = "List/column name to place the sub-ticket in (defaults to parent's list)")]
+        #[arg(
+            long,
+            help = "List/column name to place the sub-ticket in (defaults to parent's list)"
+        )]
         list: Option<String>,
     },
     #[command(about = "Return a ticket to its creator, with an optional comment")]
@@ -133,7 +151,6 @@ enum TicketCommands {
         id: String,
     },
 }
-
 
 #[derive(Subcommand)]
 enum MemoryCommands {
@@ -211,8 +228,12 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
     let config_path = AppConfig::resolve_path(cli.config.as_deref());
 
     match &cli.command {
-        Commands::Init(InitCommands::Board) => return tokio::task::block_in_place(|| run_board_init(&config_path)),
-        Commands::Init(InitCommands::Agent) => return tokio::task::block_in_place(|| run_agent_init(&config_path)),
+        Commands::Init(InitCommands::Board) => {
+            return tokio::task::block_in_place(|| run_board_init(&config_path));
+        }
+        Commands::Init(InitCommands::Agent) => {
+            return tokio::task::block_in_place(|| run_agent_init(&config_path));
+        }
         _ => {}
     }
 
@@ -306,7 +327,10 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                     if cli.json {
                         let mut val = serde_json::to_value(&ticket).unwrap();
                         val["skill_hints"] = serde_json::json!(
-                            skill_hints.iter().map(|(n, d)| json!({"name": n, "description": d})).collect::<Vec<_>>()
+                            skill_hints
+                                .iter()
+                                .map(|(n, d)| json!({"name": n, "description": d}))
+                                .collect::<Vec<_>>()
                         );
                         println!("{}", serde_json::to_string_pretty(&val).unwrap());
                     } else {
@@ -322,7 +346,9 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                 }
                 TicketCommands::Comment { id, text } => {
                     if text.is_empty() {
-                        return Err(OrgaError::BackendError("comment text cannot be empty".into()));
+                        return Err(OrgaError::BackendError(
+                            "comment text cannot be empty".into(),
+                        ));
                     }
                     board.comment(&id, &text).await?;
                     if cli.json {
@@ -339,15 +365,25 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                         println!("assigned {username} to {id}");
                     }
                 }
-                TicketCommands::CreateSub { parent_id, title, description, list } => {
-                    let sub = board.create_sub(&parent_id, &title, description.as_deref(), list.as_deref()).await?;
+                TicketCommands::CreateSub {
+                    parent_id,
+                    title,
+                    description,
+                    list,
+                } => {
+                    let sub = board
+                        .create_sub(&parent_id, &title, description.as_deref(), list.as_deref())
+                        .await?;
                     if cli.json {
                         println!(
                             "{}",
                             json!({"id": sub.summary.id, "title": sub.summary.title, "url": sub.summary.url})
                         );
                     } else {
-                        println!("created sub-ticket: {} ({})", sub.summary.title, sub.summary.url);
+                        println!(
+                            "created sub-ticket: {} ({})",
+                            sub.summary.title, sub.summary.url
+                        );
                     }
                 }
                 TicketCommands::Return { id, comment } => {
@@ -375,7 +411,10 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                     if cli.json {
                         println!("{}", json!({"ok": true}));
                     } else {
-                        println!("compaction stored for {id} ({count} comments through {})", boundary.format("%Y-%m-%d %H:%M"));
+                        println!(
+                            "compaction stored for {id} ({count} comments through {})",
+                            boundary.format("%Y-%m-%d %H:%M")
+                        );
                     }
                 }
                 TicketCommands::Decompact { id } => {
@@ -396,7 +435,8 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                 MemoryCommands::List => {
                     let entries = repo.list()?;
                     if cli.json {
-                        let arr: Vec<_> = entries.iter()
+                        let arr: Vec<_> = entries
+                            .iter()
                             .map(|e| json!({"path": e.path, "description": e.description}))
                             .collect();
                         println!("{}", serde_json::to_string_pretty(&arr).unwrap());
@@ -418,7 +458,11 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
                         print!("{}", content);
                     }
                 }
-                MemoryCommands::Write { path, content, message } => {
+                MemoryCommands::Write {
+                    path,
+                    content,
+                    message,
+                } => {
                     let commit_msg = message.unwrap_or_else(|| format!("write: {path}"));
                     repo.write(&path, &content, &commit_msg)?;
                     if cli.json {
@@ -482,4 +526,3 @@ async fn run_sync(cli: Cli) -> Result<(), OrgaError> {
 
     Ok(())
 }
-

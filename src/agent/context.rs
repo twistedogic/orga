@@ -1,7 +1,7 @@
-use chrono::Local;
 use crate::config::{AppConfig, LlmConfig, SubagentConfig};
 use crate::memory::ContextRepository;
 use crate::models::Ticket;
+use chrono::Local;
 
 const MAIN_AGENT_SYSTEM_PROMPT: &str = include_str!("prompts/main_agent.md");
 const DISPATCHER_SYSTEM_PROMPT: &str = include_str!("prompts/dispatcher.md");
@@ -25,7 +25,14 @@ pub fn build_context(
     subagents: &[(String, String)],
     agents_md: Option<&str>,
 ) -> TicketContext {
-    let system = build_system_prompt(ticket, context_repo, app_cfg, skill_ctx, subagents, agents_md);
+    let system = build_system_prompt(
+        ticket,
+        context_repo,
+        app_cfg,
+        skill_ctx,
+        subagents,
+        agents_md,
+    );
     let user = build_user_message(ticket, llm_cfg);
     TicketContext { system, user }
 }
@@ -44,7 +51,11 @@ pub fn build_subagent_context(
     TicketContext { system, user }
 }
 
-fn build_subagent_system_prompt(subagent_cfg: &SubagentConfig, context_repo: &ContextRepository, skill_ctx: Option<&SkillContext>) -> String {
+fn build_subagent_system_prompt(
+    subagent_cfg: &SubagentConfig,
+    context_repo: &ContextRepository,
+    skill_ctx: Option<&SkillContext>,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     if let Some(ref prompt) = subagent_cfg.system_prompt {
@@ -77,7 +88,14 @@ Do NOT call `comment`, `done`, or `skip` unless they are in your available tools
     parts.join("\n")
 }
 
-fn build_system_prompt(_ticket: &Ticket, context_repo: &ContextRepository, app_cfg: &AppConfig, skill_ctx: Option<&SkillContext>, subagents: &[(String, String)], agents_md: Option<&str>) -> String {
+fn build_system_prompt(
+    _ticket: &Ticket,
+    context_repo: &ContextRepository,
+    app_cfg: &AppConfig,
+    skill_ctx: Option<&SkillContext>,
+    subagents: &[(String, String)],
+    agents_md: Option<&str>,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     if subagents.is_empty() {
@@ -101,26 +119,28 @@ fn build_system_prompt(_ticket: &Ticket, context_repo: &ContextRepository, app_c
     }
 
     if let Some(ctx) = skill_ctx
-        && !ctx.available.is_empty() {
-            let mut section = "\n## Available Skills".to_string();
-            for (name, desc) in &ctx.available {
-                section.push_str(&format!("\n- **{name}**: {desc}"));
-            }
-            parts.push(section);
+        && !ctx.available.is_empty()
+    {
+        let mut section = "\n## Available Skills".to_string();
+        for (name, desc) in &ctx.available {
+            section.push_str(&format!("\n- **{name}**: {desc}"));
         }
+        parts.push(section);
+    }
 
     if let Some(md) = agents_md {
         parts.push(format!("\n## Agent Instructions\n{}", md));
     }
 
     if let Some(ctx) = skill_ctx
-        && !ctx.active.is_empty() {
-            let mut section = "\n## Active Skills".to_string();
-            for (name, body) in &ctx.active {
-                section.push_str(&format!("\n### {name}\n{body}"));
-            }
-            parts.push(section);
+        && !ctx.active.is_empty()
+    {
+        let mut section = "\n## Active Skills".to_string();
+        for (name, body) in &ctx.active {
+            section.push_str(&format!("\n### {name}\n{body}"));
         }
+        parts.push(section);
+    }
 
     parts.push(build_context_repo_section(context_repo));
 
@@ -154,24 +174,28 @@ fn build_context_repo_section(context_repo: &ContextRepository) -> String {
     section
 }
 
-fn build_user_message(
-    ticket: &Ticket,
-    _llm_cfg: &LlmConfig,
-) -> String {
+fn build_user_message(ticket: &Ticket, _llm_cfg: &LlmConfig) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     parts.push(format!("# Ticket: {}", ticket.summary.title));
     parts.push(format!("**ID:** {}", ticket.summary.id));
     parts.push(format!("**Column:** {}", ticket.summary.list_name));
     parts.push(format!("**URL:** {}", ticket.summary.url));
-    parts.push(format!("**Today's date:** {}", Local::now().format("%Y-%m-%d")));
+    parts.push(format!(
+        "**Today's date:** {}",
+        Local::now().format("%Y-%m-%d")
+    ));
 
     if let Some(ref creator) = ticket.summary.creator {
         parts.push(format!("**Creator:** @{}", creator.username));
     }
 
     if !ticket.assignees.is_empty() {
-        let names: Vec<&str> = ticket.assignees.iter().map(|m| m.username.as_str()).collect();
+        let names: Vec<&str> = ticket
+            .assignees
+            .iter()
+            .map(|m| m.username.as_str())
+            .collect();
         parts.push(format!("**Assignees:** {}", names.join(", ")));
     }
 
@@ -183,7 +207,10 @@ fn build_user_message(
         parts.push("\n## Sub-tickets".to_string());
         for sub in &ticket.sub_tickets {
             let mark = if sub.completed { "[x]" } else { "[ ]" };
-            parts.push(format!("- {} {} (id: {}) {}", mark, sub.title, sub.id, sub.url));
+            parts.push(format!(
+                "- {} {} (id: {}) {}",
+                mark, sub.title, sub.id, sub.url
+            ));
         }
     }
 
@@ -231,7 +258,11 @@ mod tests {
                 list_name: "In Progress".to_string(),
                 url: "https://example.com/T-1".to_string(),
                 completed: false,
-                creator: Some(Member { id: "u1".to_string(), username: "alice".to_string(), full_name: "Alice".to_string() }),
+                creator: Some(Member {
+                    id: "u1".to_string(),
+                    username: "alice".to_string(),
+                    full_name: "Alice".to_string(),
+                }),
                 last_commenter_is_agent: false,
                 labels: vec![],
             },
@@ -256,8 +287,12 @@ mod tests {
 
     fn make_app_cfg() -> AppConfig {
         AppConfig {
-            agent: AgentConfig { name: "bot-1".to_string() },
-            board: BoardConfig { backend: "trello".to_string() },
+            agent: AgentConfig {
+                name: "bot-1".to_string(),
+            },
+            board: BoardConfig {
+                backend: "trello".to_string(),
+            },
             trello: None,
             linear: None,
             memory: None,
@@ -280,7 +315,15 @@ mod tests {
         let ticket = make_ticket("Fix the bug");
         let dir = tempdir().unwrap();
         let repo = open_repo(dir.path());
-        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        let ctx = build_context(
+            &ticket,
+            &repo,
+            &make_llm_cfg(),
+            &make_app_cfg(),
+            None,
+            &[],
+            None,
+        );
         assert!(ctx.user.contains("Test Ticket"));
         assert!(ctx.user.contains("Fix the bug"));
     }
@@ -290,7 +333,15 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let repo = open_repo(dir.path());
-        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        let ctx = build_context(
+            &ticket,
+            &repo,
+            &make_llm_cfg(),
+            &make_app_cfg(),
+            None,
+            &[],
+            None,
+        );
         assert!(ctx.system.contains("bot-1"));
     }
 
@@ -299,7 +350,15 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let repo = open_repo(dir.path());
-        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        let ctx = build_context(
+            &ticket,
+            &repo,
+            &make_llm_cfg(),
+            &make_app_cfg(),
+            None,
+            &[],
+            None,
+        );
         assert!(ctx.system.contains("## Context Repository"));
     }
 
@@ -308,7 +367,15 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let repo = open_repo(dir.path());
-        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        let ctx = build_context(
+            &ticket,
+            &repo,
+            &make_llm_cfg(),
+            &make_app_cfg(),
+            None,
+            &[],
+            None,
+        );
         assert!(ctx.system.contains("## Context Repository (pinned)"));
         assert!(ctx.system.contains("system/overview.md"));
     }
@@ -323,7 +390,15 @@ mod tests {
         });
         let dir = tempdir().unwrap();
         let repo = open_repo(dir.path());
-        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        let ctx = build_context(
+            &ticket,
+            &repo,
+            &make_llm_cfg(),
+            &make_app_cfg(),
+            None,
+            &[],
+            None,
+        );
         assert!(ctx.user.contains("first 10 comments: auth work"));
     }
 
@@ -339,7 +414,15 @@ mod tests {
             ],
             active: vec![],
         };
-        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
+        let ctx = build_context(
+            &ticket,
+            &repo,
+            &make_llm_cfg(),
+            &make_app_cfg(),
+            Some(&skill_ctx),
+            &[],
+            None,
+        );
         assert!(ctx.system.contains("## Available Skills"));
         assert!(ctx.system.contains("**code-review**"));
         assert!(ctx.system.contains("**security**"));
@@ -352,9 +435,20 @@ mod tests {
         let repo = open_repo(dir.path());
         let skill_ctx = SkillContext {
             available: vec![("code-review".to_string(), "Reviews code.".to_string())],
-            active: vec![("code-review".to_string(), "Follow these steps to review code.".to_string())],
+            active: vec![(
+                "code-review".to_string(),
+                "Follow these steps to review code.".to_string(),
+            )],
         };
-        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
+        let ctx = build_context(
+            &ticket,
+            &repo,
+            &make_llm_cfg(),
+            &make_app_cfg(),
+            Some(&skill_ctx),
+            &[],
+            None,
+        );
         assert!(ctx.system.contains("## Active Skills"));
         assert!(ctx.system.contains("### code-review"));
         assert!(ctx.system.contains("Follow these steps to review code."));
@@ -365,7 +459,15 @@ mod tests {
         let ticket = make_ticket("");
         let dir = tempdir().unwrap();
         let repo = open_repo(dir.path());
-        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), None, &[], None);
+        let ctx = build_context(
+            &ticket,
+            &repo,
+            &make_llm_cfg(),
+            &make_app_cfg(),
+            None,
+            &[],
+            None,
+        );
         assert!(!ctx.system.contains("## Available Skills"));
         assert!(!ctx.system.contains("## Active Skills"));
     }
@@ -379,7 +481,15 @@ mod tests {
             available: vec![("s".to_string(), "desc".to_string())],
             active: vec![],
         };
-        let ctx = build_context(&ticket, &repo, &make_llm_cfg(), &make_app_cfg(), Some(&skill_ctx), &[], None);
+        let ctx = build_context(
+            &ticket,
+            &repo,
+            &make_llm_cfg(),
+            &make_app_cfg(),
+            Some(&skill_ctx),
+            &[],
+            None,
+        );
         assert!(ctx.system.contains("## Available Skills"));
         assert!(!ctx.system.contains("## Active Skills"));
     }

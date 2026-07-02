@@ -36,9 +36,8 @@ impl ContextRepository {
 
         let system_dir = root.join("system");
         if !system_dir.exists() {
-            fs::create_dir_all(&system_dir).map_err(|e| {
-                OrgaError::BackendError(format!("cannot create system dir: {e}"))
-            })?;
+            fs::create_dir_all(&system_dir)
+                .map_err(|e| OrgaError::BackendError(format!("cannot create system dir: {e}")))?;
             let overview = system_dir.join("overview.md");
             fs::write(
                 &overview,
@@ -48,7 +47,10 @@ impl ContextRepository {
             Self::commit_all(&repo, root, agent_name, "init: create context repository")?;
         }
 
-        Ok(Self { root: root.to_path_buf(), agent_name: agent_name.to_string() })
+        Ok(Self {
+            root: root.to_path_buf(),
+            agent_name: agent_name.to_string(),
+        })
     }
 
     pub fn list(&self) -> Result<Vec<ContextEntry>, OrgaError> {
@@ -68,7 +70,8 @@ impl ContextRepository {
         })?;
         let mut sub_dirs = Vec::new();
         for entry in read {
-            let entry = entry.map_err(|e| OrgaError::BackendError(format!("dir entry error: {e}")))?;
+            let entry =
+                entry.map_err(|e| OrgaError::BackendError(format!("dir entry error: {e}")))?;
             let path = entry.path();
             if path.is_dir() {
                 if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
@@ -83,7 +86,10 @@ impl ContextRepository {
                     .to_string();
                 let content = fs::read_to_string(&path).unwrap_or_default();
                 let description = extract_frontmatter_description(&content);
-                entries.push(ContextEntry { path: rel, description });
+                entries.push(ContextEntry {
+                    path: rel,
+                    description,
+                });
             }
         }
         for sub in sub_dirs {
@@ -95,7 +101,9 @@ impl ContextRepository {
     pub fn read(&self, rel_path: &str) -> Result<String, OrgaError> {
         let full = self.root.join(rel_path);
         if !full.exists() {
-            return Err(OrgaError::NotFound(format!("memory file not found: {rel_path}")));
+            return Err(OrgaError::NotFound(format!(
+                "memory file not found: {rel_path}"
+            )));
         }
         fs::read_to_string(&full)
             .map_err(|e| OrgaError::BackendError(format!("cannot read {rel_path}: {e}")))
@@ -145,7 +153,10 @@ impl ContextRepository {
                 total_bytes += meta.len();
             }
         }
-        Ok(RepoStats { file_count, total_size_kb: total_bytes / 1024 })
+        Ok(RepoStats {
+            file_count,
+            total_size_kb: total_bytes / 1024,
+        })
     }
 
     pub fn system_files(&self) -> Result<Vec<(String, String)>, OrgaError> {
@@ -154,9 +165,8 @@ impl ContextRepository {
             return Ok(vec![]);
         }
         let mut result = Vec::new();
-        let read = fs::read_dir(&system_dir).map_err(|e| {
-            OrgaError::BackendError(format!("cannot read system dir: {e}"))
-        })?;
+        let read = fs::read_dir(&system_dir)
+            .map_err(|e| OrgaError::BackendError(format!("cannot read system dir: {e}")))?;
         let mut paths: Vec<PathBuf> = read
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
@@ -208,7 +218,9 @@ impl ContextRepository {
             }
             Err(_) => {
                 repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[])
-                    .map_err(|e| OrgaError::BackendError(format!("git initial commit error: {e}")))?;
+                    .map_err(|e| {
+                        OrgaError::BackendError(format!("git initial commit error: {e}"))
+                    })?;
             }
         }
         Ok(())
@@ -217,7 +229,9 @@ impl ContextRepository {
     pub fn delete(&self, rel_path: &str) -> Result<(), OrgaError> {
         let full = self.root.join(rel_path);
         if !full.exists() {
-            return Err(OrgaError::NotFound(format!("memory file not found: {rel_path}")));
+            return Err(OrgaError::NotFound(format!(
+                "memory file not found: {rel_path}"
+            )));
         }
 
         let content = fs::read_to_string(&full)
@@ -306,7 +320,10 @@ impl ContextRepository {
             let content = self.read(&entry.path).unwrap_or_default();
             let line_count = content.lines().count();
             if line_count > 200 {
-                oversized.push(OversizedFile { path: entry.path.clone(), line_count });
+                oversized.push(OversizedFile {
+                    path: entry.path.clone(),
+                    line_count,
+                });
             }
             let terms = extract_significant_terms(&entry.description);
             term_map.push((entry.path.clone(), terms));
@@ -317,7 +334,9 @@ impl ContextRepository {
         let mut duplicates = Vec::new();
         for i in 0..term_map.len() {
             for j in (i + 1)..term_map.len() {
-                let shared: Vec<String> = term_map[i].1.iter()
+                let shared: Vec<String> = term_map[i]
+                    .1
+                    .iter()
                     .filter(|t| term_map[j].1.contains(t))
                     .cloned()
                     .collect();
@@ -349,13 +368,18 @@ impl ContextRepository {
             // Looser check: at least one term covered per file
             if covered_by.is_none() {
                 let all_covered = terms.iter().all(|term| {
-                    content_map.iter().enumerate().any(|(other_idx, (_, other_content))| {
-                        other_idx != idx && other_content.contains(term.as_str())
-                    })
+                    content_map
+                        .iter()
+                        .enumerate()
+                        .any(|(other_idx, (_, other_content))| {
+                            other_idx != idx && other_content.contains(term.as_str())
+                        })
                 });
                 if all_covered {
                     // Find best covering file (one that covers the most terms)
-                    if let Some((_, best_path)) = content_map.iter().enumerate()
+                    if let Some((_, best_path)) = content_map
+                        .iter()
+                        .enumerate()
                         .filter(|(other_idx, _)| *other_idx != idx)
                         .map(|(_, (p, c))| {
                             let count = terms.iter().filter(|t| c.contains(t.as_str())).count();
@@ -375,7 +399,11 @@ impl ContextRepository {
             }
         }
 
-        Ok(DefragReport { oversized, duplicates, deletion_candidates })
+        Ok(DefragReport {
+            oversized,
+            duplicates,
+            deletion_candidates,
+        })
     }
 }
 
@@ -441,7 +469,9 @@ pub struct DefragReport {
 
 impl DefragReport {
     pub fn is_empty(&self) -> bool {
-        self.oversized.is_empty() && self.duplicates.is_empty() && self.deletion_candidates.is_empty()
+        self.oversized.is_empty()
+            && self.duplicates.is_empty()
+            && self.deletion_candidates.is_empty()
     }
 }
 
@@ -467,7 +497,10 @@ mod tests {
     fn repo_list_extracts_frontmatter_description() {
         let (repo, _dir) = open_temp_repo();
         let entries = repo.list().unwrap();
-        let overview = entries.iter().find(|e| e.path == "system/overview.md").unwrap();
+        let overview = entries
+            .iter()
+            .find(|e| e.path == "system/overview.md")
+            .unwrap();
         assert_eq!(overview.description, "Board overview and active context");
     }
 
@@ -492,7 +525,8 @@ mod tests {
             "themes/auth.md",
             "---\ndescription: Auth patterns\n---\n\nAuth notes here.",
             "add auth theme",
-        ).unwrap();
+        )
+        .unwrap();
         let content = repo.read("themes/auth.md").unwrap();
         assert!(content.contains("Auth notes here."));
         // verify git commit exists
@@ -505,7 +539,8 @@ mod tests {
     #[test]
     fn repo_write_auto_creates_parent_dirs() {
         let (repo, _dir) = open_temp_repo();
-        repo.write("deeply/nested/topic.md", "content", "add nested").unwrap();
+        repo.write("deeply/nested/topic.md", "content", "add nested")
+            .unwrap();
         let content = repo.read("deeply/nested/topic.md").unwrap();
         assert_eq!(content, "content");
     }
@@ -513,9 +548,18 @@ mod tests {
     #[test]
     fn repo_search_finds_matches_case_insensitive() {
         let (repo, _dir) = open_temp_repo();
-        repo.write("themes/auth.md", "JWT tokens are used everywhere.", "add auth").unwrap();
+        repo.write(
+            "themes/auth.md",
+            "JWT tokens are used everywhere.",
+            "add auth",
+        )
+        .unwrap();
         let results = repo.search("jwt").unwrap();
-        assert!(results.iter().any(|(path, _, line)| path == "themes/auth.md" && line.contains("JWT")));
+        assert!(
+            results
+                .iter()
+                .any(|(path, _, line)| path == "themes/auth.md" && line.contains("JWT"))
+        );
     }
 
     #[test]
@@ -528,7 +572,8 @@ mod tests {
     #[test]
     fn repo_list_missing_frontmatter_returns_empty_description() {
         let (repo, _dir) = open_temp_repo();
-        repo.write("plain.md", "no frontmatter here", "add plain").unwrap();
+        repo.write("plain.md", "no frontmatter here", "add plain")
+            .unwrap();
         let entries = repo.list().unwrap();
         let plain = entries.iter().find(|e| e.path == "plain.md").unwrap();
         assert_eq!(plain.description, "");
@@ -575,12 +620,14 @@ mod tests {
             "themes/auth.md",
             "---\ndescription: Auth patterns JWT tokens\n---\n\nAuth content.",
             "add auth",
-        ).unwrap();
+        )
+        .unwrap();
         repo.write(
             "themes/auth-notes.md",
             "---\ndescription: Auth investigation notes\n---\n\nMore auth notes.",
             "add auth notes",
-        ).unwrap();
+        )
+        .unwrap();
         // "auth" appears in themes/auth.md — delete allowed
         repo.delete("themes/auth-notes.md").unwrap();
         assert!(repo.read("themes/auth-notes.md").is_err());
@@ -593,7 +640,8 @@ mod tests {
             "themes/obscure.md",
             "---\ndescription: Webhook retry backoff\n---\n\nContent.",
             "add obscure",
-        ).unwrap();
+        )
+        .unwrap();
         let result = repo.delete("themes/obscure.md");
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -603,7 +651,8 @@ mod tests {
     #[test]
     fn delete_allowed_when_no_frontmatter() {
         let (repo, _dir) = open_temp_repo();
-        repo.write("plain.md", "no frontmatter here", "add plain").unwrap();
+        repo.write("plain.md", "no frontmatter here", "add plain")
+            .unwrap();
         repo.delete("plain.md").unwrap();
         assert!(repo.read("plain.md").is_err());
     }
@@ -615,7 +664,8 @@ mod tests {
             "empty-desc.md",
             "---\ndescription: \n---\n\nContent.",
             "add empty",
-        ).unwrap();
+        )
+        .unwrap();
         repo.delete("empty-desc.md").unwrap();
         assert!(repo.read("empty-desc.md").is_err());
     }
@@ -634,25 +684,42 @@ mod tests {
             "themes/auth.md",
             "---\ndescription: Auth patterns JWT tokens\n---\n\nAuth.",
             "add auth",
-        ).unwrap();
+        )
+        .unwrap();
         repo.write(
             "themes/auth-notes.md",
             "---\ndescription: Auth notes\n---\n\nNotes.",
             "add notes",
-        ).unwrap();
+        )
+        .unwrap();
         repo.delete("themes/auth-notes.md").unwrap();
         let git_repo = git2::Repository::open(dir.path().join("memory")).unwrap();
-        let msg = git_repo.head().unwrap().peel_to_commit().unwrap().message().unwrap().to_string();
+        let msg = git_repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .message()
+            .unwrap()
+            .to_string();
         assert_eq!(msg, "delete: themes/auth-notes.md");
     }
 
     #[test]
     fn analyze_detects_oversized_file() {
         let (repo, _dir) = open_temp_repo();
-        let big_content = format!("---\ndescription: Big file\n---\n\n{}", "line\n".repeat(210));
+        let big_content = format!(
+            "---\ndescription: Big file\n---\n\n{}",
+            "line\n".repeat(210)
+        );
         repo.write("big.md", &big_content, "add big").unwrap();
         let report = repo.analyze().unwrap();
-        assert!(report.oversized.iter().any(|f| f.path == "big.md" && f.line_count > 200));
+        assert!(
+            report
+                .oversized
+                .iter()
+                .any(|f| f.path == "big.md" && f.line_count > 200)
+        );
     }
 
     #[test]
@@ -662,17 +729,24 @@ mod tests {
             "themes/auth.md",
             "---\ndescription: Auth JWT tokens patterns\n---\n\nContent.",
             "add auth",
-        ).unwrap();
+        )
+        .unwrap();
         repo.write(
             "themes/auth2.md",
             "---\ndescription: Auth JWT tokens investigation\n---\n\nContent.",
             "add auth2",
-        ).unwrap();
+        )
+        .unwrap();
         let report = repo.analyze().unwrap();
-        assert!(report.duplicates.iter().any(|d|
-            (d.path_a == "themes/auth.md" && d.path_b == "themes/auth2.md") ||
-            (d.path_a == "themes/auth2.md" && d.path_b == "themes/auth.md")
-        ));
+        assert!(
+            report
+                .duplicates
+                .iter()
+                .any(
+                    |d| (d.path_a == "themes/auth.md" && d.path_b == "themes/auth2.md")
+                        || (d.path_a == "themes/auth2.md" && d.path_b == "themes/auth.md")
+                )
+        );
     }
 
     #[test]
@@ -687,10 +761,16 @@ mod tests {
             "themes/notes.md",
             "---\ndescription: Auth notes\n---\n\nJust notes.",
             "add notes",
-        ).unwrap();
+        )
+        .unwrap();
         let report = repo.analyze().unwrap();
         // "auth" and "notes" from notes.md description both appear in auth.md's content
-        assert!(report.deletion_candidates.iter().any(|c| c.path == "themes/notes.md"));
+        assert!(
+            report
+                .deletion_candidates
+                .iter()
+                .any(|c| c.path == "themes/notes.md")
+        );
     }
 
     #[test]
