@@ -56,6 +56,7 @@ pub async fn build_board(
             let backend = linear::LinearBackend::new(
                 linear_cfg.api_key.clone(),
                 linear_cfg.team_id.clone(),
+                linear_cfg.project_id.clone(),
                 config.agent.name.clone(),
                 logger,
             )

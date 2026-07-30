@@ -14,6 +14,7 @@ use crate::models::{Column, Comment, Member, Ticket, TicketSummary};
 pub struct LinearBackend {
     api_key: String,
     team_id: String,
+    project_id: Option<String>,
     agent_name: String,
     viewer: Member,
     client: Client,
@@ -24,6 +25,7 @@ impl LinearBackend {
     pub async fn new(
         api_key: String,
         team_id: String,
+        project_id: Option<String>,
         agent_name: String,
         logger: Arc<Logger>,
     ) -> Result<Self, OrgaError> {
@@ -33,6 +35,7 @@ impl LinearBackend {
         let backend = Self {
             api_key,
             team_id,
+            project_id,
             agent_name,
             viewer: Member {
                 id: String::new(),
@@ -325,9 +328,9 @@ impl Board for LinearBackend {
         struct Resp {
             issues: Nodes<LinearIssueSummary>,
         }
+        let filter = list_assigned_filter(&self.team_id, &self.viewer.id, self.project_id.as_deref());
         let query = format!(
-            "{{ issues(filter: {{ team: {{ id: {{ eq: \"{}\" }} }} assignee: {{ id: {{ eq: \"{}\" }} }} }}) {{ nodes {{ id title description url state {{ id name type }} creator {{ id displayName }} comments {{ nodes {{ id body createdAt }} }} labels {{ nodes {{ name }} }} }} }} }}",
-            self.team_id, self.viewer.id
+            "{{ issues(filter: {filter}) {{ nodes {{ id title description url state {{ id name type }} creator {{ id displayName }} comments {{ nodes {{ id body createdAt }} }} labels {{ nodes {{ name }} }} }} }} }}",
         );
         let resp: Resp = self.gql(&query, serde_json::json!({})).await?;
         Ok(resp
@@ -446,19 +449,12 @@ impl LinearBackend {
         struct IssueId {
             id: String,
         }
-        let tid = &self.team_id;
-        let desc_field = if description.is_some() {
-            ", description: $description"
-        } else {
-            ""
-        };
-        let query = format!(
-            "mutation($title: String!{}) {{ issueCreate(input: {{ teamId: \"{tid}\", parentId: \"{parent_id}\", stateId: \"{state_id}\", title: $title{desc_field} }}) {{ issue {{ id }} }} }}",
-            if description.is_some() {
-                ", $description: String"
-            } else {
-                ""
-            }
+        let query = create_sub_issue_mutation(
+            &self.team_id,
+            self.project_id.as_deref(),
+            parent_id,
+            state_id,
+            description.is_some(),
         );
         let mut vars = serde_json::json!({ "title": title });
         if let Some(desc) = description {
@@ -467,6 +463,49 @@ impl LinearBackend {
         let resp: Resp = self.gql(&query, vars).await?;
         Ok(resp.issue_create.issue.id)
     }
+}
+
+/// Build the `issueCreate(input: {…})` mutation for `create_sub`. Extracted
+/// as a pure helper so the exact shape of the input (including the optional
+/// `projectId`) can be asserted in tests without standing up a backend.
+fn create_sub_issue_mutation(
+    team_id: &str,
+    project_id: Option<&str>,
+    parent_id: &str,
+    state_id: &str,
+    has_description: bool,
+) -> String {
+    let desc_var = if has_description {
+        ", $description: String"
+    } else {
+        ""
+    };
+    let desc_field = if has_description {
+        ", description: $description"
+    } else {
+        ""
+    };
+    let project_field = match project_id {
+        Some(pid) => format!(", projectId: \"{pid}\""),
+        None => String::new(),
+    };
+    format!(
+        "mutation($title: String!{desc_var}) {{ issueCreate(input: {{ teamId: \"{team_id}\", parentId: \"{parent_id}\", stateId: \"{state_id}\"{project_field}, title: $title{desc_field} }}) {{ issue {{ id }} }} }}"
+    )
+}
+
+/// Build the `issues(filter: {…})` clause for `list_assigned`. The project
+/// clause is added only when `project_id` is `Some`; team and assignee
+/// remain mandatory. Extracted as a pure helper so the exact filter shape
+/// can be asserted in tests without standing up a backend.
+fn list_assigned_filter(team_id: &str, viewer_id: &str, project_id: Option<&str>) -> String {
+    let project_clause = match project_id {
+        Some(pid) => format!(", project: {{ id: {{ eq: \"{pid}\" }} }}"),
+        None => String::new(),
+    };
+    format!(
+        "{{ team: {{ id: {{ eq: \"{team_id}\" }} }} assignee: {{ id: {{ eq: \"{viewer_id}\" }} }}{project_clause} }}"
+    )
 }
 
 /// Build a `Member` from a `LinearUser` — single source of truth for the
@@ -625,6 +664,7 @@ mod tests {
         LinearBackend {
             api_key: "key".into(),
             team_id: "team-1".into(),
+            project_id: None,
             agent_name: "agent-1".into(),
             viewer: Member {
                 id: "viewer-1".into(),
@@ -813,5 +853,53 @@ mod tests {
         );
         assert!(linear_label_names(None).is_empty());
         assert!(linear_label_names(Some(&Nodes { nodes: vec![] })).is_empty());
+    }
+
+    #[test]
+    fn list_assigned_filter_no_project_id_omits_project_clause() {
+        let f = list_assigned_filter("team-1", "viewer-1", None);
+        assert_eq!(
+            f,
+            r#"{ team: { id: { eq: "team-1" } } assignee: { id: { eq: "viewer-1" } } }"#
+        );
+        assert!(!f.contains("project"));
+    }
+
+    #[test]
+    fn list_assigned_filter_with_project_id_adds_clause() {
+        let f = list_assigned_filter("team-1", "viewer-1", Some("proj-uuid-1"));
+        assert!(f.contains(r#"project: { id: { eq: "proj-uuid-1" } }"#));
+        assert!(f.contains(r#"team: { id: { eq: "team-1" } }"#));
+        assert!(f.contains(r#"assignee: { id: { eq: "viewer-1" } }"#));
+    }
+
+    #[test]
+    fn create_sub_mutation_without_project_omits_project_id() {
+        let m = create_sub_issue_mutation("team-1", None, "parent-1", "state-1", false);
+        assert!(!m.contains("projectId"));
+        assert!(m.contains(r#"parentId: "parent-1""#));
+        assert!(m.contains(r#"stateId: "state-1""#));
+        assert!(m.contains(r#"teamId: "team-1""#));
+        assert!(!m.contains("$description"));
+    }
+
+    #[test]
+    fn create_sub_mutation_with_project_includes_project_id() {
+        let m = create_sub_issue_mutation(
+            "team-1",
+            Some("proj-uuid-1"),
+            "parent-1",
+            "state-1",
+            false,
+        );
+        assert!(m.contains(r#"projectId: "proj-uuid-1""#));
+        assert!(m.contains(r#"parentId: "parent-1""#));
+    }
+
+    #[test]
+    fn create_sub_mutation_with_description_includes_description_var_and_field() {
+        let m = create_sub_issue_mutation("team-1", None, "parent-1", "state-1", true);
+        assert!(m.contains("$description: String"));
+        assert!(m.contains("description: $description"));
     }
 }

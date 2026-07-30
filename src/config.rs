@@ -20,6 +20,8 @@ pub struct BoardConfig {
 pub struct LinearConfig {
     pub api_key: String,
     pub team_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -527,6 +529,39 @@ team_id = "team-xyz"
         let f = write_config(VALID_LINEAR_CONFIG);
         let cfg = AppConfig::load(f.path()).unwrap();
         assert_eq!(cfg.linear.unwrap().api_key, "lin_api_abc123");
+    }
+
+    #[test]
+    fn linear_config_project_id_round_trips_when_set() {
+        let content = r#"
+[agent]
+name = "agent-1"
+
+[board]
+backend = "linear"
+
+[linear]
+api_key = "lin_api_abc123"
+team_id = "team-xyz"
+project_id = "proj-uuid-1"
+"#;
+        let f = write_config(content);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(
+            cfg.linear.as_ref().unwrap().project_id.as_deref(),
+            Some("proj-uuid-1")
+        );
+        let toml_str = toml::to_string(&cfg).unwrap();
+        assert!(toml_str.contains("project_id"));
+    }
+
+    #[test]
+    fn linear_config_project_id_omitted_loads_with_none() {
+        let f = write_config(VALID_LINEAR_CONFIG);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.linear.as_ref().unwrap().project_id.is_none());
+        let toml_str = toml::to_string(&cfg).unwrap();
+        assert!(!toml_str.contains("project_id"));
     }
 
     #[test]

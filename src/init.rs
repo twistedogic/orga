@@ -26,6 +26,12 @@ pub struct LinearTeamItem {
     pub name: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LinearProjectItem {
+    pub id: String,
+    pub name: String,
+}
+
 fn linear_gql<T: for<'de> Deserialize<'de>>(api_key: &str, query: &str) -> Result<T, OrgaError> {
     #[derive(serde::Serialize)]
     struct Payload<'a> {
@@ -98,6 +104,25 @@ fn fetch_linear_teams(api_key: &str) -> Result<Vec<LinearTeamItem>, OrgaError> {
     }
     let resp: Resp = linear_gql(api_key, "query { teams { nodes { id name } } }")?;
     Ok(resp.teams.nodes)
+}
+
+fn fetch_linear_projects(
+    api_key: &str,
+    team_id: &str,
+) -> Result<Vec<LinearProjectItem>, OrgaError> {
+    #[derive(Deserialize)]
+    struct Nodes {
+        nodes: Vec<LinearProjectItem>,
+    }
+    #[derive(Deserialize)]
+    struct Resp {
+        projects: Nodes,
+    }
+    let query = format!(
+        "query {{ projects(filter: {{ team: {{ id: {{ eq: \"{team_id}\" }} }} }}) {{ nodes {{ id name }} }} }}"
+    );
+    let resp: Resp = linear_gql(api_key, &query)?;
+    Ok(resp.projects.nodes)
 }
 
 #[derive(Debug, Deserialize)]
@@ -369,6 +394,43 @@ fn run_linear_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(
         .map(|t| t.id.as_str())
         .unwrap_or_default();
 
+    // The existing project's UUID only matters if the operator kept the same
+    // team; a new team makes the old project id meaningless, so default it.
+    let existing_project_id = existing
+        .and_then(|c| c.linear.as_ref())
+        .and_then(|l| l.project_id.clone())
+        .filter(|_| team_id == existing_team_id)
+        .unwrap_or_default();
+
+    print!("Fetching projects for the selected team... ");
+    let projects = fetch_linear_projects(&api_key, team_id)?;
+    if projects.is_empty() {
+        println!("none");
+    } else {
+        println!("found {} project(s)", projects.len());
+    }
+
+    let none_label = "None — scope to the whole team";
+    let mut project_labels: Vec<&str> = vec![none_label];
+    project_labels.extend(projects.iter().map(|p| p.name.as_str()));
+    let default_project_idx = projects
+        .iter()
+        .position(|p| p.id == existing_project_id)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let selected_project_label = Select::new("Which project?", project_labels)
+        .with_starting_cursor(default_project_idx)
+        .prompt()
+        .map_err(|e| OrgaError::ConfigError(e.to_string()))?;
+    let project_id = if selected_project_label == none_label {
+        None
+    } else {
+        projects
+            .iter()
+            .find(|p| p.name == selected_project_label)
+            .map(|p| p.id.clone())
+    };
+
     let mut config = AppConfig::try_load(config_path).unwrap_or_else(|| AppConfig {
         agent: crate::config::AgentConfig {
             name: agent_name.clone(),
@@ -392,6 +454,7 @@ fn run_linear_init(config_path: &Path, existing: Option<&AppConfig>) -> Result<(
     config.linear = Some(crate::config::LinearConfig {
         api_key,
         team_id: team_id.to_string(),
+        project_id,
     });
     config.trello = None;
     config.save(config_path)?;
@@ -601,6 +664,7 @@ mod tests {
             linear: Some(LinearConfig {
                 api_key: api_key.into(),
                 team_id: team_id.into(),
+                project_id: None,
             }),
             memory: None,
             logging: None,
