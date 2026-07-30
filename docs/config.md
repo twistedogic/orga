@@ -13,7 +13,7 @@ name = "my-agent"
 
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
-| `name` | string | yes | Identity used when posting comments and assigning tickets on the board |
+| `name` | string | yes | Identity used when posting comments and assigning tickets on the board. Also names the git-backed context repository. |
 
 ---
 
@@ -57,14 +57,16 @@ Required when `board.backend = "linear"`.
 
 ```toml
 [linear]
-api_key = "lin_api_..."
-team_id = "your-team-id"
+api_key    = "lin_api_..."
+team_id    = "your-team-id"
+project_id = "your-project-uuid"   # optional
 ```
 
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
 | `api_key` | string | yes | Linear personal API key |
 | `team_id` | string | yes | Linear team ID to scope issue queries |
+| `project_id` | string | no | Restrict issue queries and new sub-tickets to a single Linear project. Omit to scope to the whole team. |
 
 ---
 
@@ -95,20 +97,26 @@ max_actions_per_ticket = 10                          # optional, default 10
 
 ## `[memory]`
 
+`path` is shared between two stores: the SQLite DB at `<path>.db` (per-ticket compaction summaries and todos) and the git-backed long-term context repository at `<path>` (cross-ticket knowledge, see `memory_*` tools). Setting `path = "/var/lib/orga/m"` produces a DB at `/var/lib/orga/m.db` and a repo at `/var/lib/orga/m`.
+
 ```toml
 [memory]
-path = "~/.orga/memory.db"
+path                     = "~/.orga/memory"   # both DB and repo live under this prefix
+defrag_file_threshold    = 20                 # optional, default 20
+defrag_size_threshold_kb = 50                 # optional, default 50
 ```
 
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
-| `path` | string | no | Path to the SQLite file used for per-ticket agent memory. Default: `~/.orga/memory.db`. Supports `~` expansion. |
+| `path` | string | no | Base path for memory stores. SQLite DB at `<path>.db`, git repo at `<path>`. Defaults: DB `~/.orga/memory.db`, repo `~/.orga/memory`. Supports `~` expansion. |
+| `defrag_file_threshold` | integer | no | Number of files in the context repo that triggers a defrag pass. Default: `20` |
+| `defrag_size_threshold_kb` | integer | no | Total size of the context repo (KB) that triggers a defrag pass. Default: `50` |
 
 ---
 
 ## `[workspace]`
 
-When present, enables the `bash` tool for subagents. Each ticket gets an isolated subdirectory under `path`.
+Required for the `bash` tool (it executes inside `<path>/<ticket-id>/`). Each ticket gets an isolated subdirectory.
 
 ```toml
 [workspace]
@@ -149,39 +157,30 @@ debug = false
 
 ---
 
+## `[metrics]`
+
+Optional. When present, the daemon exposes Prometheus metrics on the configured address.
+
+```toml
+[metrics]
+listen_addr = "127.0.0.1:9090"   # optional, default 127.0.0.1:9090
+```
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `listen_addr` | string | no | `host:port` for the metrics endpoint. Default: `127.0.0.1:9090`. A bind failure is non-fatal — the daemon logs a warning and continues without metrics. |
+
+---
+
 ## `comment_compaction_threshold`
 
-Top-level key. Controls when the agent suggests compacting ticket comments to reduce context size.
+Top-level key. Controls when the agent is allowed to suggest compacting ticket comments to reduce context size.
 
 ```toml
 comment_compaction_threshold = 20
 ```
 
 Default: `5`
-
----
-
-## `[[workflow]]`
-
-One entry per board column the agent should act on. Repeat the section for multiple columns.
-
-```toml
-[[workflow]]
-column      = "In Progress"
-prompt      = "You are working on this ticket. Make progress and comment with updates."
-
-[[workflow]]
-column      = "Review"
-prompt_file = "~/.orga/prompts/review.md"
-```
-
-| Key | Type | Required | Description |
-|-----|------|----------|-------------|
-| `column` | string | yes | Column/list name on the board (case-insensitive match) |
-| `prompt` | string | one of | Inline system prompt for this column |
-| `prompt_file` | string | one of | Path to a file containing the system prompt. Supports `~` expansion. Loaded at startup. |
-
-Either `prompt` or `prompt_file` must be set, not both.
 
 ---
 
@@ -206,7 +205,7 @@ system_prompt = "You are a research assistant..."
 |-----|------|----------|-------------|
 | `name` | string | yes | Unique identifier used in `dispatch { subagent: "..." }` calls |
 | `description` | string | yes | Shown to the main agent when deciding which subagent to dispatch to |
-| `tools` | array of string | yes | Tools this subagent may use. Valid values: `comment`, `move_ticket`, `assign`, `create_sub`, `set_memory`, `compact`, `done`, `skip`, `dispatch`, `return`, `bash` |
+| `tools` | array of string | yes | Tools this subagent may use. Valid values: `comment`, `create_sub`, `compact`, `done`, `skip`, `dispatch`, `return`, `bash`, `todos`, `memory_list`, `memory_read`, `memory_write`, `memory_search` |
 | `skills` | array of string | no | Skill names (filenames without `.md`) loaded into this subagent's context from the `[skills]` directory |
 | `model` | string | no | Override the LLM model for this subagent |
 | `max_actions` | integer | no | Override the max tool calls per run for this subagent |
@@ -259,7 +258,9 @@ poll_interval_secs     = 30
 max_actions_per_ticket = 15
 
 [memory]
-path = "~/.orga/memory.db"
+path                     = "~/.orga/memory"
+defrag_file_threshold    = 30
+defrag_size_threshold_kb = 100
 
 [workspace]
 path = "~/.orga/workspace"
@@ -271,15 +272,10 @@ path = "~/.orga/skills"
 file  = "~/.orga/orga.log"
 debug = false
 
+[metrics]
+listen_addr = "127.0.0.1:9090"
+
 comment_compaction_threshold = 20
-
-[[workflow]]
-column = "In Progress"
-prompt = "Work on the ticket. Post a comment with your findings or changes. When done, call done{}."
-
-[[workflow]]
-column = "Review"
-prompt_file = "~/.orga/prompts/review.md"
 
 [[subagents]]
 name        = "bash-worker"
