@@ -82,6 +82,20 @@ impl WorkspaceStore {
     }
 }
 
+/// Render a relative path with `/` separators on every platform.
+///
+/// Relative paths in `orga` are logical identifiers, not host paths: they are
+/// memory keys passed back to `ContextRepository::read`/`delete`, git index
+/// paths, and listings shown to the language model. `Path::to_string_lossy`
+/// emits `\` on Windows, so those identifiers would stop matching the
+/// `/`-separated paths callers wrote.
+pub fn to_slash(rel: &Path) -> String {
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn normalize_path(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -106,7 +120,7 @@ fn visit_dir(root: &Path, dir: &Path, paths: &mut Vec<String>) -> std::io::Resul
         } else if ft.is_file()
             && let Ok(rel) = path.strip_prefix(root)
         {
-            paths.push(rel.to_string_lossy().into_owned());
+            paths.push(to_slash(rel));
         }
     }
     Ok(())
@@ -180,6 +194,12 @@ mod tests {
         let listing = ws.list("T-1").unwrap();
         let lines: Vec<&str> = listing.lines().collect();
         assert_eq!(lines, vec!["a.txt", "a/c.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn to_slash_uses_forward_separators_for_nested_paths() {
+        let rel = PathBuf::from("a").join("b").join("c.txt");
+        assert_eq!(to_slash(&rel), "a/b/c.txt");
     }
 
     #[test]

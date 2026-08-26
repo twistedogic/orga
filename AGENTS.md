@@ -56,6 +56,7 @@ Guidelines for AI agents and contributors working on this project.
 - Agent tool permissions: comment, assign, create sub-tickets, return (never close). `done{}` calls `board.return_ticket()` and triggers the sleep-time agent.
 - All read commands support `--json`; errors with `--json` produce `{"error": "<message>"}` on stderr with non-zero exit.
 - Public APIs return `Result<_, OrgaError>`. No `unwrap()` / `expect()` in production paths.
+- Relative paths are logical identifiers (memory keys, git index paths, workspace listings shown to the language model), so every `Path` → `String` conversion of a relative path goes through `workspace::to_slash` and always renders `/`. Never use `to_string_lossy()` on a relative path — it emits `\` on Windows and breaks path identity comparisons (e.g. `ContextRepository::delete`).
 - Metrics listener is a one-shot TCP server: `HTTP/1.0 200 OK`, `Content-Type: text/plain; version=0.0.4`, `Connection: close`. The previous axum-based server (and `/healthz`) was removed in the `2026-07-02-simplify-agent-loop` refactor — do not reintroduce axum.
 - New board backends implement the `Board` trait and register in `build_board`. No `axum`, no `tower`, no `hyper`.
 

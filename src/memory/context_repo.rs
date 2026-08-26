@@ -107,11 +107,10 @@ impl ContextRepository {
                 }
                 sub_dirs.push(path);
             } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                let rel = path
-                    .strip_prefix(root)
-                    .map_err(|e| OrgaError::BackendError(format!("path strip error: {e}")))?
-                    .to_string_lossy()
-                    .to_string();
+                let rel = crate::workspace::to_slash(
+                    path.strip_prefix(root)
+                        .map_err(|e| OrgaError::BackendError(format!("path strip error: {e}")))?,
+                );
                 let content = fs::read_to_string(&path).unwrap_or_default();
                 let description = extract_frontmatter_description(&content);
                 entries.push(ContextEntry {
@@ -201,11 +200,10 @@ impl ContextRepository {
             .collect();
         paths.sort();
         for path in paths {
-            let rel = path
-                .strip_prefix(&self.root)
-                .map_err(|e| OrgaError::BackendError(format!("path error: {e}")))?
-                .to_string_lossy()
-                .to_string();
+            let rel = crate::workspace::to_slash(
+                path.strip_prefix(&self.root)
+                    .map_err(|e| OrgaError::BackendError(format!("path error: {e}")))?,
+            );
             let content = fs::read_to_string(&path).unwrap_or_default();
             result.push((rel, content));
         }

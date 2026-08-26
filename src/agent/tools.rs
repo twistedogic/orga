@@ -896,22 +896,14 @@ mod tests {
     #[tokio::test]
     async fn dispatch_bash_executes_in_workspace_dir() {
         let (ctx, dir) = make_ctx_with_workspace(false);
-        let expected = dir
-            .path()
-            .join("T-1")
-            .canonicalize()
-            .unwrap_or_else(|_| dir.path().join("T-1"))
-            .to_string_lossy()
-            .into_owned();
-        let result = dispatch("bash", r#"{"command":"pwd"}"#, &ctx).await;
+        // Assert the effect rather than `pwd`'s spelling: MSYS `sh` on Windows
+        // prints POSIX paths (`/d/a/...`) that never compare equal to the host
+        // path, while a file created by the command lands in the real cwd.
+        let result = dispatch("bash", r#"{"command":"echo marker > cwd.txt"}"#, &ctx).await;
         let v: serde_json::Value = serde_json::from_str(&result).expect("should be valid JSON");
-        let actual = v["stdout"].as_str().unwrap().trim().to_string();
-        // resolve symlinks on both sides for macOS /private/var vs /var
-        let actual_canon =
-            std::fs::canonicalize(&actual).unwrap_or_else(|_| std::path::PathBuf::from(&actual));
-        let expected_canon = std::fs::canonicalize(&expected)
-            .unwrap_or_else(|_| std::path::PathBuf::from(&expected));
-        assert_eq!(actual_canon, expected_canon);
+        assert_eq!(v["exit_code"].as_i64().unwrap(), 0);
+        let written = std::fs::read_to_string(dir.path().join("T-1").join("cwd.txt")).unwrap();
+        assert_eq!(written.trim(), "marker");
     }
 
     #[tokio::test]
