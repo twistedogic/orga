@@ -1,0 +1,49 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Debug build
+    cmds:
+      - cargo build
+
+  release:
+    desc: Release build
+    cmds:
+      - cargo build --release
+
+  test:
+    desc: Run tests
+    cmds:
+      - cargo test
+
+  fmt:
+    desc: Format code
+    cmds:
+      - cargo fmt
+
+  fmt-check:
+    desc: Check formatting (CI)
+    cmds:
+      - cargo fmt --check
+
+  lint:
+    desc: Run clippy (warnings as errors, CI parity)
+    cmds:
+      - cargo clippy --all-targets -- -D warnings
+
+  run:
+    desc: Run the CLI
+    cmds:
+      - cargo run {{.CLI_ARGS}}
+
+  ci:
+    desc: Everything CI checks — fmt, clippy, tests
+    cmds:
+      - task: fmt-check
+      - task: lint
+      - task: test
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - cargo clean

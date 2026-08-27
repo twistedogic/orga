@@ -100,3 +100,7 @@ Spec wording is normative: scenarios in `#### Scenario: …` blocks are the cont
 
 - Keep AGENTS.md up to date on key design decisions and development workflows. When a decision is made or a workflow changes, update this file in the same change so it remains the source of truth for future contributors and agents.
 - When touching `openspec/` (adding a spec, archiving a change, revising the `context:` block), make sure the corresponding entry in this file still matches reality — module layout, dependency list, key constraints, and "single source of truth" invariants drift together.
+
+## CI / Automation
+
+- Use [Task](https://taskfile.dev/docs/getting-started) (a `Taskfile.yml`) as the CI runner and shared automation entry point; keep commands reproducible locally and in CI.
